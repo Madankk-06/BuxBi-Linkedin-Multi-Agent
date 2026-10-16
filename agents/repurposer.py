@@ -83,8 +83,8 @@ PROVEN LINKEDIN WINNING STRUCTURE:
    Here is what actually changes when you structure the architecture properly:"
 
 2. Structured Breakdown / Core Takeaways:
-   Break the source material into 4-5 actionable pillars or architectural tiers.
-   Use clean sub-bullets with '↳' or '•' for technical drill-downs.
+   Break the source material into 4-5 numbered pillars (1., 2., 3., 4.) or architectural tiers.
+   Use ONLY standard bullet points ('•' or '-') for technical sub-points.
 
 3. The Golden Rule / Executive Takeaway:
    1-2 sentences summarizing the overarching engineering or business truth.
@@ -93,7 +93,8 @@ PROVEN LINKEDIN WINNING STRUCTURE:
    A thoughtful closing question inviting peers to share their experiences or approach.
 
 STRICT WRITING RULES:
-- ABSOLUTELY ZERO ASTERISKS (* or **): Never use markdown asterisks. Use plain capital letters for headers and unicode symbols like '↳' or '•'.
+- ABSOLUTELY ZERO ASTERISKS (* or **): Never use markdown asterisks.
+- ABSOLUTELY ZERO ARROW SYMBOLS (↳, →, ⇒): Use ONLY numbers (1., 2., 3.) and standard bullet points (•).
 - Spacing: 1-2 sentence paragraphs with clean blank line breaks. Optimized for mobile scrolling.
 - Tonality: Senior practitioner, objective, confident, educational.
 - Target Length: 900 to 1,300 characters.
@@ -105,12 +106,12 @@ Transform the following source content into a native LinkedIn post:
 SOURCE CONTENT:
 {source_content}
 
-Draft the post following the 4-part structure (Hook -> Core Breakdown -> Golden Rule -> Discussion Question).
-Ensure ZERO asterisks. Write the post now:
+Draft the post following the 4-part structure (Hook -> Numbered Breakdown with '•' bullets -> Golden Rule -> Discussion Question).
+Ensure ZERO asterisks (*) and ZERO arrow symbols (↳). Write the post now:
 """
 
         raw_draft = llm_client.generate(prompt, system_prompt=system_prompt, temperature=0.5)
-        # Apply the humanizer pass for buzzword removal and polish
+        # Apply the humanizer pass for buzzword removal and deterministic symbol scrub
         final_draft = humanizer.audit_and_humanize(raw_draft)
         formula = "Repurposed/Framework-Extraction"
 

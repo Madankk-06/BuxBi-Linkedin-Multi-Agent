@@ -1,11 +1,21 @@
 import os
+import re
 import logging
 import requests
-import json
-from typing import Optional, Callable
+from typing import Optional
 from core.config import config
 
 logger = logging.getLogger(__name__)
+
+def _esc(val: Optional[str]) -> str:
+    """Safely HTML-escape dynamic strings for Telegram HTML parse_mode and strip asterisks/arrows."""
+    if not val:
+        return ""
+    cleaned = str(val).replace("**", "").replace("*", "")
+    for sym in ("↳", "→", "⇒", "▸", "▹", "➢", "➤"):
+        cleaned = cleaned.replace(sym, "•")
+    return cleaned.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
 
 class TelegramBot:
     BASE_URL = "https://api.telegram.org/bot"
@@ -16,7 +26,7 @@ class TelegramBot:
         self.api_url = f"{self.BASE_URL}{self.token}"
 
     def send_message(self, text: str, reply_markup: Optional[dict] = None, chat_id: Optional[str] = None, parse_mode: str = "HTML") -> dict:
-        """Send a message to Telegram."""
+        """Send a message to Telegram with automatic asterisk/arrow sanitization and HTML fallback."""
         if not self.token:
             logger.warning("Telegram Bot Token is not configured. Skipping send.")
             return {}
@@ -26,12 +36,18 @@ class TelegramBot:
             logger.warning("Telegram Chat ID is not configured. Skipping send.")
             return {}
 
+        # Always strip markdown asterisks and arrow symbols from outgoing text
+        clean_text = text.replace("**", "").replace("*", "")
+        for sym in ("↳", "→", "⇒", "▸", "▹", "➢", "➤"):
+            clean_text = clean_text.replace(sym, "•")
+
         payload = {
             "chat_id": chat_id,
-            "text": text,
-            "parse_mode": parse_mode,
+            "text": clean_text,
             "disable_web_page_preview": False
         }
+        if parse_mode:
+            payload["parse_mode"] = parse_mode
         if reply_markup:
             payload["reply_markup"] = reply_markup
 
@@ -39,7 +55,12 @@ class TelegramBot:
             resp = requests.post(f"{self.api_url}/sendMessage", json=payload, timeout=20)
             data = resp.json()
             if not data.get("ok"):
-                logger.error(f"Telegram error: {data.get('description')}")
+                logger.warning(f"Telegram HTML send warning ({data.get('description')}), retrying as plain text...")
+                plain_text = re.sub(r"<[^>]+>", "", clean_text).replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">")
+                payload.pop("parse_mode", None)
+                payload["text"] = plain_text
+                resp2 = requests.post(f"{self.api_url}/sendMessage", json=payload, timeout=20)
+                return resp2.json()
             return data
         except Exception as e:
             logger.error(f"Failed to send Telegram message: {e}")
@@ -50,24 +71,23 @@ class TelegramBot:
         if not self.token:
             return {}
         chat_id = chat_id or self.default_chat_id
-        
+        clean_caption = (caption or "").replace("**", "").replace("*", "")
+
         try:
-            # If local file exists, upload as multipart/form-data
             if os.path.exists(photo_path_or_url):
                 with open(photo_path_or_url, "rb") as f:
                     data = {
                         "chat_id": chat_id,
-                        "caption": caption or "",
+                        "caption": clean_caption,
                         "parse_mode": "HTML"
                     }
                     resp = requests.post(f"{self.api_url}/sendPhoto", data=data, files={"photo": f}, timeout=30)
                     return resp.json()
             else:
-                # If remote URL, pass in json payload
                 payload = {
                     "chat_id": chat_id,
                     "photo": photo_path_or_url,
-                    "caption": caption or "",
+                    "caption": clean_caption,
                     "parse_mode": "HTML"
                 }
                 resp = requests.post(f"{self.api_url}/sendPhoto", json=payload, timeout=25)
@@ -81,13 +101,14 @@ class TelegramBot:
         if not self.token:
             return {}
         chat_id = chat_id or self.default_chat_id
+        clean_caption = (caption or "").replace("**", "").replace("*", "")
 
         try:
             if os.path.exists(animation_path_or_url):
                 with open(animation_path_or_url, "rb") as f:
                     data = {
                         "chat_id": chat_id,
-                        "caption": caption or "",
+                        "caption": clean_caption,
                         "parse_mode": "HTML"
                     }
                     resp = requests.post(f"{self.api_url}/sendAnimation", data=data, files={"animation": f}, timeout=45)
@@ -96,7 +117,7 @@ class TelegramBot:
                 payload = {
                     "chat_id": chat_id,
                     "animation": animation_path_or_url,
-                    "caption": caption or "",
+                    "caption": clean_caption,
                     "parse_mode": "HTML"
                 }
                 resp = requests.post(f"{self.api_url}/sendAnimation", json=payload, timeout=30)
@@ -110,7 +131,6 @@ class TelegramBot:
         if not self.token:
             return None
         try:
-            # 1. Get file path from Telegram
             file_info_resp = requests.get(f"{self.api_url}/getFile", params={"file_id": file_id}, timeout=20)
             file_info = file_info_resp.json()
             if not file_info.get("ok"):
@@ -120,7 +140,6 @@ class TelegramBot:
             file_path = file_info["result"]["file_path"]
             download_url = f"https://api.telegram.org/file/bot{self.token}/{file_path}"
             
-            # 2. Download the binary stream
             dl_resp = requests.get(download_url, stream=True, timeout=30)
             if dl_resp.status_code == 200:
                 os.makedirs(os.path.dirname(dest_path), exist_ok=True)
@@ -136,22 +155,24 @@ class TelegramBot:
             logger.error(f"Error downloading file from Telegram: {e}")
             return None
 
-    def send_post_approval_card(self, post_id: int, topic: str, hook_formula: str, draft_text: str, image_url: Optional[str] = None):
+    def send_post_approval_card(self, post_id: int, topic: str, hook_formula: str, draft_text: str, image_url: Optional[str] = None, chat_id: Optional[str] = None):
         """Send an interactive post approval card with inline action buttons and optional visual."""
-        # 1. If an image is generated, send the photo or animation first
+        escaped_topic = _esc(topic)
+        escaped_formula = _esc(hook_formula)
+        escaped_draft = _esc(draft_text)
+
         if image_url:
             if str(image_url).lower().endswith(".gif"):
-                self.send_animation(image_url, caption=f"🎬 <b>Animated Architecture for Post #{post_id}</b>\n📌 <i>{topic}</i>")
+                self.send_animation(image_url, caption=f"🎬 <b>Animated Architecture for Post #{post_id}</b>\n📌 <i>{escaped_topic}</i>", chat_id=chat_id)
             else:
-                self.send_photo(image_url, caption=f"🎨 <b>Architecture Diagram for Post #{post_id}</b>\n📌 <i>{topic}</i>")
+                self.send_photo(image_url, caption=f"🎨 <b>Architecture Diagram for Post #{post_id}</b>\n📌 <i>{escaped_topic}</i>", chat_id=chat_id)
 
         char_count = len(draft_text)
-        escaped_draft = draft_text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
         
         message_html = (
             f"<b>🚀 NEW GEN AI LINKEDIN POST DRAFT</b>\n\n"
-            f"<b>📌 Topic:</b> {topic}\n"
-            f"<b>🎯 Hook Formula:</b> <code>{hook_formula}</code>\n"
+            f"<b>📌 Topic:</b> {escaped_topic}\n"
+            f"<b>🎯 Hook Formula:</b> <code>{escaped_formula}</code>\n"
             f"<b>📊 Length:</b> {char_count} chars (sweet spot: 900-1,300)\n\n"
             f"<b>--- Post Preview ---</b>\n\n"
             f"{escaped_draft}\n\n"
@@ -170,19 +191,22 @@ class TelegramBot:
                     {"text": "🔄 Regenerate Angle", "callback_data": f"regen_post:{post_id}"}
                 ],
                 [
+                    {"text": "🤝 Get 3 Connection Leads", "callback_data": f"send_leads:{post_id}"},
                     {"text": "❌ Discard", "callback_data": f"discard_post:{post_id}"}
                 ]
             ]
         }
 
-        return self.send_message(message_html, reply_markup=inline_keyboard)
+        return self.send_message(message_html, reply_markup=inline_keyboard, chat_id=chat_id)
 
     def send_final_confirmation_card(self, post_id: int, topic: str, draft_text: str, image_url: str, theme_name: Optional[str] = None, chat_id: Optional[str] = None, public_media_url: Optional[str] = None):
         """Send preview of post with attached image and ask for final confirmation before posting."""
-        theme_caption = f"\n🎨 <b>Theme:</b> {theme_name}" if theme_name else ""
+        escaped_topic = _esc(topic)
+        escaped_draft = _esc(draft_text)
+        theme_caption = f"\n🎨 <b>Theme:</b> {_esc(theme_name)}" if theme_name else ""
         caption = (
             f"🖼 <b>Post Preview with Your Attached Image</b>{theme_caption}\n"
-            f"📌 <b>Topic:</b> {topic}\n\n"
+            f"📌 <b>Topic:</b> {escaped_topic}\n\n"
             f"Does this look good and ready to post to LinkedIn?"
         )
         if image_url.lower().endswith(".gif"):
@@ -190,7 +214,6 @@ class TelegramBot:
         else:
             self.send_photo(image_url, caption=caption, chat_id=chat_id)
 
-        escaped_draft = draft_text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
         media_line = f"\n🖼 <b>Media URL:</b> {public_media_url}\n" if public_media_url else ""
         message_html = (
             f"<b>📋 Final Post Draft for Post #{post_id}</b>\n\n"
@@ -213,22 +236,34 @@ class TelegramBot:
         return self.send_message(message_html, reply_markup=inline_keyboard, chat_id=chat_id)
 
     def send_connection_lead_card(self, lead_id: int, name: str, title: str, company: str, 
-                                  profile_url: str, why_relevant: str, note: str):
+                                  profile_url: str, why_relevant: str, note: str, chat_id: Optional[str] = None):
         """Send a high-authority connection lead with 1-click profile link and copyable note."""
-        escaped_note = note.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+        escaped_name = _esc(name)
+        escaped_title = _esc(title)
+        escaped_company = _esc(company)
+        escaped_why = _esc(why_relevant)
+        escaped_note = _esc(note)
         
         message_html = (
             f"<b>🤝 HIGH-AUTHORITY GEN AI CONNECTION LEAD</b>\n\n"
-            f"<b>👤 Name:</b> {name}\n"
-            f"<b>💼 Title:</b> {title} ({company})\n"
+            f"<b>👤 Name:</b> {escaped_name}\n"
+            f"<b>💼 Title:</b> {escaped_title} ({escaped_company})\n"
             f"<b>🔗 Profile:</b> <a href=\"{profile_url}\">{profile_url}</a>\n"
-            f"<b>💡 Why Connect:</b> {why_relevant}\n\n"
+            f"<b>💡 Why Connect:</b> {escaped_why}\n\n"
             f"<b>📝 Personalized Note ({len(note)}/300 chars):</b>\n"
             f"<pre>{escaped_note}</pre>\n\n"
-            f"👉 <i>Open the profile link, click 'Connect' → 'Add note', and paste the text above!</i>"
+            f"👉 <i>Open the profile link, click 'Connect' then 'Add a note', and paste the text above!</i>"
         )
 
-        return self.send_message(message_html)
+        inline_keyboard = {
+            "inline_keyboard": [
+                [
+                    {"text": f"🔗 Open {name}'s LinkedIn Profile", "url": profile_url}
+                ]
+            ]
+        }
+
+        return self.send_message(message_html, reply_markup=inline_keyboard, chat_id=chat_id)
 
     def answer_callback_query(self, callback_query_id: str, text: str):
         """Acknowledge a button tap."""

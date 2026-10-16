@@ -70,10 +70,15 @@ class AgentOrchestrator:
         logger.info(f"Sent approval card for repurposed post #{post_id} to Telegram.")
         return post_id
 
-    def run_networking_pipeline(self, count: int = 3):
+    def run_networking_pipeline(self, count: int = 3, topic_hint: Optional[str] = None, chat_id: Optional[str] = None):
         """Autonomous pipeline: Find high-authority Gen AI leaders -> Draft notes -> Send to Telegram."""
         logger.info("Executing Autonomous Networking Pipeline...")
-        leads = authority_networker.generate_daily_leads(count=count)
+        if not topic_hint:
+            latest = db.get_latest_pending_post() or db.get_latest_post()
+            if latest:
+                topic_hint = latest.get("topic")
+
+        leads = authority_networker.generate_daily_leads(count=count, topic_hint=topic_hint)
         
         for lead in leads:
             telegram_bot.send_connection_lead_card(
@@ -83,7 +88,8 @@ class AgentOrchestrator:
                 company=lead["company"],
                 profile_url=lead["profile_url"],
                 why_relevant=lead["why_relevant"],
-                note=lead["customized_note"]
+                note=lead["customized_note"],
+                chat_id=chat_id
             )
         logger.info(f"Sent {len(leads)} connection leads to Telegram.")
 
@@ -205,6 +211,12 @@ class AgentOrchestrator:
             post = self._reconstruct_post_from_message(message_obj)
             if post:
                 post_id = post["id"]
+
+        if action == "send_leads":
+            telegram_bot.send_message("🤝 Sourcing 3 relevant Gen AI leaders and crafting personalized connection notes...", chat_id=chat_id)
+            topic_hint = post.get("topic") if post else None
+            self.run_networking_pipeline(count=3, topic_hint=topic_hint, chat_id=chat_id)
+            return
 
         if not post:
             telegram_bot.send_message(
@@ -352,13 +364,16 @@ class AgentOrchestrator:
             return
 
         if any(trigger in clean_text for trigger in ["draft post", "create post", "generate post", "new post", "write a post"]):
-            telegram_bot.send_message("🔍 Scouting trends & drafting your next Gen AI architecture post...", chat_id=chat_id)
+            telegram_bot.send_message("🔍 Scouting trends and drafting your next Gen AI architecture post...", chat_id=chat_id)
             self.run_morning_content_pipeline()
             return
 
-        if any(trigger in clean_text for trigger in ["find leaders", "connections", "network", "scout leaders"]):
-            telegram_bot.send_message("🤝 Sourcing top Gen AI authorities & crafting bespoke connection notes...", chat_id=chat_id)
-            self.run_networking_pipeline(count=3)
+        if any(trigger in clean_text for trigger in [
+            "find leaders", "connection", "connections", "network", "scout",
+            "relevant profile", "relevant profiles", "send profile", "send profiles", "leads", "/network", "/connections"
+        ]):
+            telegram_bot.send_message("🤝 Sourcing 3 relevant Gen AI leaders and crafting personalized connection notes...", chat_id=chat_id)
+            self.run_networking_pipeline(count=3, chat_id=chat_id)
             return
 
         if clean_text.startswith(("/repurpose", "repurpose")):
@@ -380,13 +395,13 @@ class AgentOrchestrator:
             pending = db.get_latest_pending_post() or db.get_latest_post()
             pending_info = f"Post #{pending['id']} [{pending['status']}] ('{pending['topic'][:35]}...')" if pending else "None"
             status_text = (
-                "<b>🟢 BuxBi Status: ACTIVE & 24/7 MONITORING</b>\n\n"
+                "<b>🟢 BuxBi Status: ACTIVE &amp; 24/7 MONITORING</b>\n\n"
                 f"• <b>Latest Draft:</b> {pending_info}\n"
-                f"• <b>Active Skills:</b> Post Writer, Humanizer, Content Planner, Repurposer (/repurpose)\n"
+                f"• <b>Active Skills:</b> Post Writer, Humanizer, Content Planner, Authority Networker, Repurposer\n"
                 f"• <b>Publishing Engine:</b> Publora Live Dispatch (60s UTC ISO-8601 + Auto-Verification)\n"
-                f"• <b>LLM:</b> Groq (qwen/qwen3.8-27b)\n"
+                f"• <b>Formatting Guard:</b> Zero Asterisks (*), Zero Arrows, Clean Bullets (•) and Numbers\n"
                 f"• <b>Cloud Status:</b> Dual DB (SQLite/MySQL) + HTTP Healthcheck Server (port 10000)\n\n"
-                "<i>Commands: /status, /repurpose &lt;url/text&gt;, 'draft post', 'network', 'post now'</i>"
+                "<i>Commands: /status, /repurpose &lt;url/text&gt;, 'draft post', 'connections', 'post now'</i>"
             )
             telegram_bot.send_message(status_text, chat_id=chat_id)
             return
@@ -396,18 +411,20 @@ class AgentOrchestrator:
 You are Buxbi (also known as LinkBi), a sharp, helpful, and technically brilliant executive AI assistant for LinkedIn growth and Generative AI thought leadership.
 You are chatting directly with your creator and user, Madan, via Telegram.
 
-GUIDELINES:
-1. Tone: Friendly, concise, highly competent, professional senior AI engineer/partner.
+STRICT FORMATTING & TONE GUIDELINES:
+1. Tone: Friendly, natural, concise, highly competent senior AI engineer/partner.
 2. Address him naturally as Madan when appropriate.
-3. Keep answers concise (1-3 short paragraphs, formatted with clear spacing or bullet points), perfectly suited for mobile Telegram reading.
-4. If he asks about technical concepts (like vector indexing, RAG layers, Step 4 & 5, or prompting), explain them clearly and authoritatively.
-5. If he asks you to perform an action (e.g. generate a post or check something), confirm and guide him.
+3. Keep answers concise (1-3 short paragraphs), suited for mobile Telegram reading.
+4. ABSOLUTELY NO ASTERISKS (* or **): Never use markdown bolding or asterisks anywhere in your reply. Telegram prints raw asterisks and it looks messy.
+5. ABSOLUTELY NO ARROW SYMBOLS (↳, →, ⇒) or '#' markdown headers: Use ONLY plain sentences, standard numbers (1., 2., 3.), or simple bullet points (•).
+6. If he asks about technical concepts, explain them clearly and naturally.
 """
         try:
             bot_reply = llm_client.generate(text, system_prompt=system_prompt, temperature=0.7)
-            telegram_bot.send_message(bot_reply, chat_id=chat_id)
+            clean_reply = humanizer.clean_formatting(bot_reply)
+            telegram_bot.send_message(clean_reply, chat_id=chat_id, parse_mode="")
         except Exception as e:
             logger.error(f"Error generating conversational reply: {e}")
-            telegram_bot.send_message("I hear you, Madan! How can I assist you with your LinkedIn presence or posts right now?", chat_id=chat_id)
+            telegram_bot.send_message("I hear you, Madan! How can I assist you with your LinkedIn presence or posts right now?", chat_id=chat_id, parse_mode="")
 
 orchestrator = AgentOrchestrator()
