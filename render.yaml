@@ -1,0 +1,27 @@
+services:
+  - type: web
+    name: buxbi-linkedin-agent
+    env: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: python main.py
+    autoDeploy: true
+    envVars:
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: TELEGRAM_CHAT_ID
+        sync: false
+      - key: LLM_PROVIDER
+        value: groq
+      - key: GROQ_API_KEY
+        sync: false
+      - key: DB_TYPE
+        value: sqlite
+      - key: PUBLORA_API_KEY
+        sync: false
+      - key: LINKEDIN_PLATFORM_ID
+        sync: false
+      - key: SCHEDULE_TIME
+        value: "07:30"
+      - key: TIMEZONE
+        value: "Asia/Kolkata"

@@ -1,0 +1,26 @@
+# Environments & Secrets
+.env
+.venv/
+env/
+venv/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.log
+
+# OS & Editor
+.DS_Store
+.idea/
+.vscode/
+
+# Local data & temporary test files
+data/*.db
+data/user_uploads/*
+!data/user_uploads/.gitkeep
+data/generated_cards/*
+!data/generated_cards/.gitkeep
+test_*
+WhatsApp*
+*.jpeg

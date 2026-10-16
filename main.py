@@ -1,0 +1,155 @@
+import time
+import logging
+import requests
+from datetime import datetime
+from apscheduler.schedulers.background import BackgroundScheduler
+from apscheduler.triggers.cron import CronTrigger
+
+import os
+import threading
+from http.server import HTTPServer, BaseHTTPRequestHandler
+
+from core.config import config
+from core.database import db
+from lib.telegram_bot import telegram_bot
+from orchestrator import orchestrator
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+)
+logger = logging.getLogger("LinkedinAgentMain")
+
+class HealthHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header("Content-type", "application/json")
+        self.end_headers()
+        self.wfile.write(b'{"status":"healthy","agent":"Buxbi","uptime":"24/7"}')
+
+    def log_message(self, format, *args):
+        pass
+
+def start_health_server():
+    port = int(os.getenv("PORT", 10000))
+    try:
+        server = HTTPServer(("0.0.0.0", port), HealthHandler)
+        t = threading.Thread(target=server.serve_forever, daemon=True)
+        t.start()
+        logger.info(f"Healthcheck HTTP server active on port {port}")
+    except Exception as e:
+        logger.warning(f"Could not bind health port {port}: {e}")
+
+def run_daily_job():
+    """Triggered every day at the scheduled time."""
+    logger.info("Executing scheduled morning agent job...")
+    try:
+        orchestrator.run_morning_content_pipeline()
+        orchestrator.run_networking_pipeline(count=config.MAX_DAILY_CONNECTIONS)
+    except Exception as e:
+        logger.error(f"Error during scheduled job: {e}")
+        telegram_bot.send_message(f"⚠️ Error running autonomous scheduled job: {e}")
+
+def poll_telegram_updates():
+    """Long-polling listener for Telegram commands and inline button callbacks."""
+    if not config.TELEGRAM_BOT_TOKEN:
+        logger.warning("TELEGRAM_BOT_TOKEN not configured. Telegram polling is disabled.")
+        return
+
+    logger.info("Starting Telegram Bot listener...")
+    offset = None
+    
+    while True:
+        try:
+            url = f"https://api.telegram.org/bot{config.TELEGRAM_BOT_TOKEN}/getUpdates"
+            params = {"timeout": 30}
+            if offset:
+                params["offset"] = offset
+
+            resp = requests.get(url, params=params, timeout=35)
+            if resp.status_code == 200:
+                data = resp.json()
+                for update in data.get("result", []):
+                    offset = update["update_id"] + 1
+                    
+                    # 1. Handle inline button callbacks
+                    if "callback_query" in update:
+                        cb = update["callback_query"]
+                        cb_id = cb["id"]
+                        data_payload = cb.get("data", "")
+                        chat_id = str(cb["message"]["chat"]["id"])
+                        message_id = cb["message"]["message_id"]
+                        
+                        telegram_bot.answer_callback_query(cb_id, "Processing your choice...")
+                        orchestrator.handle_callback_action(data_payload, chat_id, message_id)
+
+                    # 2. Handle photos sent by user
+                    elif "message" in update and "photo" in update["message"]:
+                        msg = update["message"]
+                        chat_id = str(msg["chat"]["id"])
+                        # Get highest resolution photo
+                        photo_file_id = msg["photo"][-1]["file_id"]
+                        orchestrator.handle_user_image(photo_file_id, chat_id)
+
+                    # 3. Handle images sent as documents/files
+                    elif "message" in update and "document" in update["message"]:
+                        msg = update["message"]
+                        chat_id = str(msg["chat"]["id"])
+                        doc = msg["document"]
+                        mime = doc.get("mime_type", "")
+                        if mime.startswith("image/"):
+                            orchestrator.handle_user_image(doc["file_id"], chat_id)
+                        else:
+                            telegram_bot.send_message("Please send image files (JPG, PNG, GIF) so I can attach them to your post!", chat_id=chat_id)
+
+                    # 4. Handle text commands and conversation
+                    elif "message" in update and "text" in update["message"]:
+                        msg = update["message"]
+                        text = msg["text"].strip()
+                        chat_id = str(msg["chat"]["id"])
+
+                        if text == "/start" or text == "/help":
+                            help_text = (
+                                "👋 <b>Hey Madan! I'm Buxbi, your autonomous LinkedIn Gen AI partner.</b>\n\n"
+                                "Here is what we can do together:\n"
+                                "• <b>Chat with me:</b> Ask me any question, tell me what to post about, or give me feedback!\n"
+                                "• <b>Send an image:</b> Send me any photo/GIF directly here, and I'll attach it to your current post draft.\n"
+                                "• <b>Text commands:</b> Type <code>draft post</code>, <code>post now</code>, <code>find leaders</code>, or <code>status</code>.\n"
+                                "• <b>Buttons:</b> Tap the buttons below any post card to approve, schedule, or regenerate."
+                            )
+                            telegram_bot.send_message(help_text, chat_id=chat_id)
+                        else:
+                            orchestrator.handle_conversational_text(text, chat_id)
+
+            time.sleep(1)
+        except Exception as e:
+            logger.error(f"Error in polling loop: {e}")
+            time.sleep(5)
+
+def main():
+    logger.info("Initializing LinkedIn Gen AI Autonomous Multi-Agent System...")
+    
+    missing = config.validate()
+    if missing:
+        logger.warning(f"Notice: Missing environment variables: {', '.join(missing)}")
+        logger.warning("Please update .env to enable full autonomous features.")
+
+    # Start lightweight HTTP healthcheck server for cloud hosting (Render/Koyeb/Railway)
+    start_health_server()
+
+    # Setup APScheduler
+    scheduler = BackgroundScheduler(timezone=config.TIMEZONE)
+    hour, minute = config.SCHEDULE_TIME.split(":")
+    scheduler.add_job(
+        run_daily_job,
+        CronTrigger(hour=int(hour), minute=int(minute)),
+        id="daily_linkedin_job"
+    )
+    scheduler.start()
+    logger.info(f"Scheduler active: daily run configured at {config.SCHEDULE_TIME} ({config.TIMEZONE})")
+
+    # Start Telegram listener in main thread
+    poll_telegram_updates()
+
+if __name__ == "__main__":
+    main()
