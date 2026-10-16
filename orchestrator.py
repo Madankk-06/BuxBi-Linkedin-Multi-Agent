@@ -6,6 +6,7 @@ from agents.post_architect import post_architect
 from agents.humanizer import humanizer
 from agents.authority_networker import authority_networker
 from agents.image_architect import image_architect
+from agents.repurposer import repurposer
 from lib.telegram_bot import telegram_bot
 from lib.publora_client import publora_client
 from core.database import db
@@ -47,6 +48,23 @@ class AgentOrchestrator:
             image_url=image_path
         )
         logger.info(f"Sent approval card for post #{post_id} to Telegram.")
+        return post_id
+
+    def run_repurpose_pipeline(self, raw_input: str, chat_id: Optional[str] = None) -> int:
+        """Autonomous pipeline: Repurpose cross-platform content/URL -> Structure & Humanize -> Telegram Approval."""
+        logger.info("Executing Autonomous Repurpose Pipeline...")
+        telegram_bot.send_message("🔄 Repurposing your content into a high-authority LinkedIn post...", chat_id=chat_id)
+        topic_title, formula, final_draft = repurposer.repurpose(raw_input)
+        post_id = db.save_post_draft(topic_title, formula, final_draft, image_url=None)
+        logger.info(f"Saved repurposed post #{post_id} to database.")
+        telegram_bot.send_post_approval_card(
+            post_id=post_id,
+            topic=topic_title,
+            hook_formula=formula,
+            draft_text=final_draft,
+            image_url=None
+        )
+        logger.info(f"Sent approval card for repurposed post #{post_id} to Telegram.")
         return post_id
 
     def run_networking_pipeline(self, count: int = 3):
@@ -243,15 +261,33 @@ class AgentOrchestrator:
             self.run_networking_pipeline(count=3)
             return
 
+        if clean_text.startswith(("/repurpose", "repurpose")):
+            import re
+            content_to_repurpose = re.sub(r'^(?:/repurpose|repurpose)[:\s]*', '', text, flags=re.IGNORECASE).strip()
+            if not content_to_repurpose:
+                telegram_bot.send_message(
+                    "ℹ️ <b>How to use Repurpose:</b>\n\n"
+                    "Send: <code>/repurpose &lt;URL or notes/text&gt;</code>\n\n"
+                    "For example:\n"
+                    "• <code>/repurpose https://arxiv.org/abs/...</code>\n"
+                    "• <code>/repurpose We overhauled our RAG architecture today with hybrid search and cross-encoders...</code>",
+                    chat_id=chat_id
+                )
+                return
+            self.run_repurpose_pipeline(content_to_repurpose, chat_id=chat_id)
+            return
+
         if clean_text in ["status", "/status"]:
             pending = db.get_latest_pending_post()
             pending_info = f"Post #{pending['id']} ('{pending['topic'][:35]}...')" if pending else "None"
             status_text = (
-                "<b>🟢 BuxBi Status: ACTIVE & LISTENING</b>\n\n"
+                "<b>🟢 BuxBi Status: ACTIVE & 24/7 MONITORING</b>\n\n"
                 f"• <b>Pending Draft:</b> {pending_info}\n"
-                f"• <b>Workflow:</b> Custom image upload + conversational commands enabled\n"
-                f"• <b>LLM:</b> Groq (qwen/qwen3.8-27b)\n\n"
-                "<i>You can talk to me, ask me questions about AI architectures, ask me to draft posts, or send me an image to attach!</i>"
+                f"• <b>Active Skills:</b> Post Writer, Humanizer, Content Planner, Repurposer (/repurpose)\n"
+                f"• <b>Workflow:</b> Telegram Mobile Gatekeeper + Custom Image Upload\n"
+                f"• <b>LLM:</b> Groq (qwen/qwen3.8-27b)\n"
+                f"• <b>Cloud Status:</b> Dual DB (SQLite/MySQL) + HTTP Healthcheck Server (port 10000)\n\n"
+                "<i>Commands: /status, /repurpose &lt;url/text&gt;, 'draft post', 'network', 'post now'</i>"
             )
             telegram_bot.send_message(status_text, chat_id=chat_id)
             return
