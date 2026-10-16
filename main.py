@@ -163,7 +163,11 @@ def main():
         id="daily_linkedin_job"
     )
     scheduler.start()
-    logger.info(f"Scheduler active: daily run configured at {config.SCHEDULE_TIME} ({config.TIMEZONE})")
+    # Register 1-click '/' command menu in Telegram
+    try:
+        telegram_bot.set_bot_commands()
+    except Exception as e:
+        logger.warning(f"Could not set bot commands: {e}")
 
     # Start Telegram listener in main thread
     poll_telegram_updates()

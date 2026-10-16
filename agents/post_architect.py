@@ -1,5 +1,6 @@
 import logging
 from lib.llm_client import llm_client
+from core.feedback_memory import feedback_memory
 
 logger = logging.getLogger(__name__)
 
@@ -7,9 +8,13 @@ class PostArchitectAgent:
     def draft_post(self, brief: dict) -> tuple[str, str]:
         """Draft an authoritative, layer-by-layer ecosystem breakdown Gen AI LinkedIn post."""
         
-        system_prompt = """
+        rules_block = feedback_memory.get_rules_prompt()
+
+        system_prompt = f"""
 You are the Post Architect Agent for an executive-tier LinkedIn presence in Generative AI.
 Your mission is to write high-authority, systematic architectural breakdown posts that simplify complex Gen AI ecosystems into clear, digestible engineering layers.
+
+{rules_block}
 
 PROVEN WINNING FORMULA (Ecosystem Simplified Framework):
 1. Empathy Hook (Lines 1-2):
@@ -56,7 +61,7 @@ Follow the Ecosystem Simplified structure strictly:
 3. The golden rule / architectural maxim.
 4. The engaging closing question.
 
-Remember: ZERO asterisks (*), ZERO arrow symbols (↳). Use only numbers (1., 2., 3.) and standard bullet points (•).
+Remember: Follow all learned rules strictly. ZERO asterisks (*), ZERO arrow symbols (↳). Use only numbers (1., 2., 3.) and standard bullet points (•).
 Write the post now:
 """
 

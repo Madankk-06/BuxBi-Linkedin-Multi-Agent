@@ -10,6 +10,7 @@ from agents.humanizer import humanizer
 from agents.authority_networker import authority_networker
 from agents.image_architect import image_architect
 from agents.repurposer import repurposer
+from core.feedback_memory import feedback_memory
 from lib.telegram_bot import telegram_bot
 from lib.publora_client import publora_client
 from core.database import db
@@ -346,8 +347,8 @@ class AgentOrchestrator:
         from lib.llm_client import llm_client
         clean_text = text.strip().lower()
 
-        # 1. Quick command intents ("post now", "publish", "approve")
-        if clean_text in ["post now", "publish", "approve", "approve now", "retry", "retry post"]:
+        # 1. Quick command intents ("/post", "post now", "publish", "approve")
+        if clean_text in ["/post", "post", "post now", "publish", "approve", "approve now", "retry", "retry post"]:
             target_post = None
             if message_obj and "reply_to_message" in message_obj:
                 target_post = self._reconstruct_post_from_message(message_obj["reply_to_message"])
@@ -358,19 +359,41 @@ class AgentOrchestrator:
                 self._publish_post_now(target_post, chat_id)
             else:
                 telegram_bot.send_message(
-                    "ℹ️ No post draft found in database. Reply <b>'post now'</b> directly to a draft message in Telegram, or type <b>'draft post'</b> to create a new one!",
+                    "ℹ️ No post draft found in database. Reply <b>'post now'</b> directly to a draft message in Telegram, or type <code>/draft</code> to create a new one!",
                     chat_id=chat_id
                 )
             return
 
-        if any(trigger in clean_text for trigger in ["draft post", "create post", "generate post", "new post", "write a post"]):
+        if clean_text in ["/draft", "draft", "draft post", "create post", "generate post", "new post", "write a post"]:
             telegram_bot.send_message("🔍 Scouting trends and drafting your next Gen AI architecture post...", chat_id=chat_id)
             self.run_morning_content_pipeline()
             return
 
+        if any(clean_text.startswith(cmd) for cmd in ["/learn", "learn"]):
+            rule_text = re.sub(r'^(?:/learn|learn)[:\s]*', '', text, flags=re.IGNORECASE).strip()
+            if not rule_text:
+                telegram_bot.send_message(
+                    "🧠 <b>How to teach Buxbi:</b>\n\n"
+                    "Send: <code>/learn &lt;instruction, rule, or correction&gt;</code>\n\n"
+                    "For example:\n"
+                    "• <code>/learn Always mention latency as a benchmark target rather than a guarantee.</code>\n"
+                    "• <code>/learn Avoid absolute claims like 'always saves compute'.</code>\n\n"
+                    "I will save it to my permanent memory and follow it on every future post!",
+                    chat_id=chat_id
+                )
+                return
+            saved_rule = feedback_memory.add_rule(rule_text)
+            reply = (
+                "🧠 <b>Learned and Stored in Memory!</b>\n\n"
+                f"Rule: {saved_rule}\n\n"
+                "I will follow this rule for all upcoming post drafts and never repeat that mistake."
+            )
+            telegram_bot.send_message(reply, chat_id=chat_id)
+            return
+
         if any(trigger in clean_text for trigger in [
-            "find leaders", "connection", "connections", "network", "scout",
-            "relevant profile", "relevant profiles", "send profile", "send profiles", "leads", "/network", "/connections"
+            "/connections", "connections", "/network", "find leaders", "connection", "network", "scout",
+            "relevant profile", "relevant profiles", "send profile", "send profiles", "leads"
         ]):
             telegram_bot.send_message("🤝 Sourcing 3 relevant Gen AI leaders and crafting personalized connection notes...", chat_id=chat_id)
             self.run_networking_pipeline(count=3, chat_id=chat_id)
@@ -391,6 +414,20 @@ class AgentOrchestrator:
             self.run_repurpose_pipeline(content_to_repurpose, chat_id=chat_id)
             return
 
+        if clean_text in ["help", "/help", "menu", "/menu"]:
+            help_text = (
+                "👋 <b>Hey Madan! Here are your 1-click '/' options:</b>\n\n"
+                "• <code>/draft</code> — Generate a fresh Gen AI architecture post draft\n"
+                "• <code>/post</code> — Publish your latest post directly to LinkedIn\n"
+                "• <code>/connections</code> — Get 3 relevant Gen AI leaders + custom notes\n"
+                "• <code>/repurpose &lt;url/text&gt;</code> — Turn an article or notes into a LinkedIn post\n"
+                "• <code>/learn &lt;rule&gt;</code> — Teach Buxbi a new rule to remember permanently\n"
+                "• <code>/status</code> — View 24/7 cloud container health and active draft\n\n"
+                "<i>You can click any command above or use the '/' menu button right beside your chat box!</i>"
+            )
+            telegram_bot.send_message(help_text, chat_id=chat_id)
+            return
+
         if clean_text in ["status", "/status"]:
             pending = db.get_latest_pending_post() or db.get_latest_post()
             pending_info = f"Post #{pending['id']} [{pending['status']}] ('{pending['topic'][:35]}...')" if pending else "None"
@@ -398,10 +435,11 @@ class AgentOrchestrator:
                 "<b>🟢 BuxBi Status: ACTIVE &amp; 24/7 MONITORING</b>\n\n"
                 f"• <b>Latest Draft:</b> {pending_info}\n"
                 f"• <b>Active Skills:</b> Post Writer, Humanizer, Content Planner, Authority Networker, Repurposer\n"
+                f"• <b>Learned Rules:</b> {len(feedback_memory.rules)} feedback rules active in memory\n"
                 f"• <b>Publishing Engine:</b> Publora Live Dispatch (60s UTC ISO-8601 + Auto-Verification)\n"
                 f"• <b>Formatting Guard:</b> Zero Asterisks (*), Zero Arrows, Clean Bullets (•) and Numbers\n"
                 f"• <b>Cloud Status:</b> Dual DB (SQLite/MySQL) + HTTP Healthcheck Server (port 10000)\n\n"
-                "<i>Commands: /status, /repurpose &lt;url/text&gt;, 'draft post', 'connections', 'post now'</i>"
+                "<i>Commands: /draft, /post, /connections, /repurpose, /learn, /status, /help</i>"
             )
             telegram_bot.send_message(status_text, chat_id=chat_id)
             return

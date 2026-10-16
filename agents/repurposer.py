@@ -5,6 +5,7 @@ from typing import Tuple, Optional
 from html.parser import HTMLParser
 from lib.llm_client import llm_client
 from agents.humanizer import humanizer
+from core.feedback_memory import feedback_memory
 
 logger = logging.getLogger(__name__)
 
@@ -69,11 +70,14 @@ class RepurposerAgent:
         """Converts raw input/URL into a structured, humanized LinkedIn post.
         Returns: (topic_title, formula, final_draft)"""
         topic_title, source_content = self.extract_content(raw_input)
+        rules_block = feedback_memory.get_rules_prompt()
 
-        system_prompt = """
+        system_prompt = f"""
 You are the Repurposer Specialist Agent for an executive-tier LinkedIn presence in Generative AI and software architecture.
 Your mission is to take raw cross-platform content (articles, blog posts, video notes, X threads, or architectural memos)
 and convert them into a punchy, high-authority native LinkedIn post.
+
+{rules_block}
 
 PROVEN LINKEDIN WINNING STRUCTURE:
 1. Hook (Lines 1-2):

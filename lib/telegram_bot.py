@@ -25,6 +25,27 @@ class TelegramBot:
         self.default_chat_id = default_chat_id or config.TELEGRAM_CHAT_ID
         self.api_url = f"{self.BASE_URL}{self.token}"
 
+    def set_bot_commands(self) -> dict:
+        """Register the 1-click '/' command menu in Telegram chat bar."""
+        if not self.token:
+            return {}
+        commands = [
+            {"command": "draft", "description": "Draft a fresh Gen AI post now"},
+            {"command": "post", "description": "Publish latest post to LinkedIn"},
+            {"command": "connections", "description": "Get 3 connection leads and notes"},
+            {"command": "repurpose", "description": "Repurpose URL/article/text to post"},
+            {"command": "learn", "description": "Teach Buxbi a rule or improvement"},
+            {"command": "status", "description": "Check 24/7 cloud container status"},
+            {"command": "help", "description": "Show all commands and guides"}
+        ]
+        try:
+            resp = requests.post(f"{self.api_url}/setMyCommands", json={"commands": commands}, timeout=15)
+            logger.info(f"Registered Telegram bot '/' commands: {resp.status_code}")
+            return resp.json()
+        except Exception as e:
+            logger.error(f"Failed to set bot commands: {e}")
+            return {}
+
     def send_message(self, text: str, reply_markup: Optional[dict] = None, chat_id: Optional[str] = None, parse_mode: str = "HTML") -> dict:
         """Send a message to Telegram with automatic asterisk/arrow sanitization and HTML fallback."""
         if not self.token:
