@@ -189,6 +189,14 @@ class Database:
             row = cursor.fetchone()
             return dict(row) if (row and self.is_sqlite) else row
 
+    def get_latest_post(self) -> Optional[dict]:
+        """Fetch the most recent post draft regardless of status."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM posts ORDER BY id DESC LIMIT 1")
+            row = cursor.fetchone()
+            return dict(row) if (row and self.is_sqlite) else row
+
     def update_post_image(self, post_id: int, image_url: str):
         """Update the image attached to a post."""
         with self.get_connection() as conn:

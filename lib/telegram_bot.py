@@ -177,7 +177,7 @@ class TelegramBot:
 
         return self.send_message(message_html, reply_markup=inline_keyboard)
 
-    def send_final_confirmation_card(self, post_id: int, topic: str, draft_text: str, image_url: str, theme_name: Optional[str] = None, chat_id: Optional[str] = None):
+    def send_final_confirmation_card(self, post_id: int, topic: str, draft_text: str, image_url: str, theme_name: Optional[str] = None, chat_id: Optional[str] = None, public_media_url: Optional[str] = None):
         """Send preview of post with attached image and ask for final confirmation before posting."""
         theme_caption = f"\n🎨 <b>Theme:</b> {theme_name}" if theme_name else ""
         caption = (
@@ -191,9 +191,11 @@ class TelegramBot:
             self.send_photo(image_url, caption=caption, chat_id=chat_id)
 
         escaped_draft = draft_text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+        media_line = f"\n🖼 <b>Media URL:</b> {public_media_url}\n" if public_media_url else ""
         message_html = (
             f"<b>📋 Final Post Draft for Post #{post_id}</b>\n\n"
-            f"{escaped_draft}\n\n"
+            f"{escaped_draft}\n"
+            f"{media_line}\n"
             f"<i>Tap below to confirm and post:</i>"
         )
 

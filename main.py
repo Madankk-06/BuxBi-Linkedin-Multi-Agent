@@ -22,6 +22,22 @@ logger = logging.getLogger("LinkedinAgentMain")
 
 class HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
+        if self.path.startswith("/media/"):
+            filename = os.path.basename(self.path[len("/media/"):])
+            filepath = os.path.join("data", "user_uploads", filename)
+            if os.path.exists(filepath) and os.path.isfile(filepath):
+                ext = filename.lower().rsplit(".", 1)[-1] if "." in filename else "jpg"
+                mime_map = {"jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png", "gif": "image/gif"}
+                self.send_response(200)
+                self.send_header("Content-type", mime_map.get(ext, "image/jpeg"))
+                self.end_headers()
+                with open(filepath, "rb") as f:
+                    self.wfile.write(f.read())
+                return
+            self.send_response(404)
+            self.end_headers()
+            return
+
         self.send_response(200)
         self.send_header("Content-type", "application/json")
         self.end_headers()
@@ -77,11 +93,12 @@ def poll_telegram_updates():
                         cb = update["callback_query"]
                         cb_id = cb["id"]
                         data_payload = cb.get("data", "")
-                        chat_id = str(cb["message"]["chat"]["id"])
-                        message_id = cb["message"]["message_id"]
+                        msg_obj = cb.get("message", {})
+                        chat_id = str(msg_obj["chat"]["id"])
+                        message_id = msg_obj["message_id"]
                         
                         telegram_bot.answer_callback_query(cb_id, "Processing your choice...")
-                        orchestrator.handle_callback_action(data_payload, chat_id, message_id)
+                        orchestrator.handle_callback_action(data_payload, chat_id, message_id, message_obj=msg_obj)
 
                     # 2. Handle photos sent by user
                     elif "message" in update and "photo" in update["message"]:
@@ -114,12 +131,12 @@ def poll_telegram_updates():
                                 "Here is what we can do together:\n"
                                 "• <b>Chat with me:</b> Ask me any question, tell me what to post about, or give me feedback!\n"
                                 "• <b>Send an image:</b> Send me any photo/GIF directly here, and I'll attach it to your current post draft.\n"
-                                "• <b>Text commands:</b> Type <code>draft post</code>, <code>post now</code>, <code>find leaders</code>, or <code>status</code>.\n"
+                                "• <b>Text commands:</b> Type <code>draft post</code>, <code>post now</code>, <code>/repurpose &lt;url/text&gt;</code>, <code>find leaders</code>, or <code>status</code>.\n"
                                 "• <b>Buttons:</b> Tap the buttons below any post card to approve, schedule, or regenerate."
                             )
                             telegram_bot.send_message(help_text, chat_id=chat_id)
                         else:
-                            orchestrator.handle_conversational_text(text, chat_id)
+                            orchestrator.handle_conversational_text(text, chat_id, message_obj=msg)
 
             time.sleep(1)
         except Exception as e:
