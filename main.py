@@ -154,15 +154,32 @@ def main():
     # Start lightweight HTTP healthcheck server for cloud hosting (Render/Koyeb/Railway)
     start_health_server()
 
-    # Setup APScheduler
-    scheduler = BackgroundScheduler(timezone=config.TIMEZONE)
+    # Setup APScheduler with strict timezone resolution (guarantees Asia/Kolkata 07:30 AM IST)
+    import zoneinfo
+    try:
+        tz = zoneinfo.ZoneInfo(config.TIMEZONE)
+    except Exception as e:
+        logger.warning(f"Could not load zoneinfo for {config.TIMEZONE} ({e}), falling back...")
+        try:
+            import pytz
+            tz = pytz.timezone(config.TIMEZONE)
+        except Exception:
+            from datetime import timezone as dt_tz, timedelta
+            # Fallback to IST fixed offset (+05:30) if system tz database is missing
+            tz = dt_tz(timedelta(hours=5, minutes=30), name="IST")
+
+    scheduler = BackgroundScheduler(timezone=tz)
     hour, minute = config.SCHEDULE_TIME.split(":")
-    scheduler.add_job(
+    trigger = CronTrigger(hour=int(hour), minute=int(minute), timezone=tz)
+    daily_job = scheduler.add_job(
         run_daily_job,
-        CronTrigger(hour=int(hour), minute=int(minute)),
-        id="daily_linkedin_job"
+        trigger,
+        id="daily_linkedin_job",
+        replace_existing=True
     )
     scheduler.start()
+    orchestrator.scheduler = scheduler
+    logger.info(f"Daily morning pipeline scheduled strictly for {config.SCHEDULE_TIME} ({config.TIMEZONE}). Next fire: {daily_job.next_run_time}")
     # Register 1-click '/' command menu in Telegram
     try:
         telegram_bot.set_bot_commands()

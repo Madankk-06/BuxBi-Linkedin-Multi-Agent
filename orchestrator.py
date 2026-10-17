@@ -431,8 +431,15 @@ class AgentOrchestrator:
         if clean_text in ["status", "/status"]:
             pending = db.get_latest_pending_post() or db.get_latest_post()
             pending_info = f"Post #{pending['id']} [{pending['status']}] ('{pending['topic'][:35]}...')" if pending else "None"
+            next_run_str = f"{config.SCHEDULE_TIME} ({config.TIMEZONE}) Daily"
+            if getattr(self, "scheduler", None):
+                job = self.scheduler.get_job("daily_linkedin_job")
+                if job and job.next_run_time:
+                    next_run_str = job.next_run_time.strftime("%A, %d %b %Y at %I:%M %p %Z")
+
             status_text = (
                 "<b>🟢 BuxBi Status: ACTIVE &amp; 24/7 MONITORING</b>\n\n"
+                f"• <b>Morning Schedule:</b> {next_run_str}\n"
                 f"• <b>Latest Draft:</b> {pending_info}\n"
                 f"• <b>Active Skills:</b> Post Writer, Humanizer, Content Planner, Authority Networker, Repurposer\n"
                 f"• <b>Learned Rules:</b> {len(feedback_memory.rules)} feedback rules active in memory\n"
