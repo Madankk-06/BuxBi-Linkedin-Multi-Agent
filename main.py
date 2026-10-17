@@ -66,6 +66,14 @@ def run_daily_job():
         logger.error(f"Error during scheduled job: {e}")
         telegram_bot.send_message(f"⚠️ Error running autonomous scheduled job: {e}")
 
+def run_weekly_intimation_job():
+    """Triggered weekly (every Sunday evening) to request new tech insights, documents, or focus areas."""
+    logger.info("Executing scheduled weekly knowledge intimation...")
+    try:
+        telegram_bot.send_weekly_intimation()
+    except Exception as e:
+        logger.error(f"Error sending weekly intimation: {e}")
+
 def poll_telegram_updates():
     """Long-polling listener for Telegram commands and inline button callbacks."""
     if not config.TELEGRAM_BOT_TOKEN:
@@ -108,16 +116,17 @@ def poll_telegram_updates():
                         photo_file_id = msg["photo"][-1]["file_id"]
                         orchestrator.handle_user_image(photo_file_id, chat_id)
 
-                    # 3. Handle images sent as documents/files
+                    # 3. Handle images or technical documents sent by user
                     elif "message" in update and "document" in update["message"]:
                         msg = update["message"]
                         chat_id = str(msg["chat"]["id"])
                         doc = msg["document"]
                         mime = doc.get("mime_type", "")
+                        file_name = doc.get("file_name", "document.txt")
                         if mime.startswith("image/"):
                             orchestrator.handle_user_image(doc["file_id"], chat_id)
                         else:
-                            telegram_bot.send_message("Please send image files (JPG, PNG, GIF) so I can attach them to your post!", chat_id=chat_id)
+                            orchestrator.handle_user_document(doc["file_id"], file_name, chat_id)
 
                     # 4. Handle text commands and conversation
                     elif "message" in update and "text" in update["message"]:
@@ -177,9 +186,18 @@ def main():
         id="daily_linkedin_job",
         replace_existing=True
     )
+    # Schedule weekly Sunday 20:00 IST knowledge intimation prompt
+    intimation_trigger = CronTrigger(day_of_week="sun", hour=20, minute=0, timezone=tz)
+    intimation_job = scheduler.add_job(
+        run_weekly_intimation_job,
+        intimation_trigger,
+        id="weekly_knowledge_intimation_job",
+        replace_existing=True
+    )
     scheduler.start()
     orchestrator.scheduler = scheduler
     logger.info(f"Daily morning pipeline scheduled strictly for {config.SCHEDULE_TIME} ({config.TIMEZONE}). Next fire: {daily_job.next_run_time}")
+    logger.info(f"Weekly Sunday intimation scheduled for 20:00 ({config.TIMEZONE}). Next fire: {intimation_job.next_run_time}")
     # Register 1-click '/' command menu in Telegram
     try:
         telegram_bot.set_bot_commands()

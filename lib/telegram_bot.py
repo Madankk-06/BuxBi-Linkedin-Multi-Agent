@@ -30,11 +30,13 @@ class TelegramBot:
         if not self.token:
             return {}
         commands = [
-            {"command": "draft", "description": "Draft a fresh Gen AI post now"},
+            {"command": "draft", "description": "Draft a fresh Gen AI post + GIF"},
             {"command": "post", "description": "Publish latest post to LinkedIn"},
             {"command": "connections", "description": "Get 3 connection leads and notes"},
             {"command": "repurpose", "description": "Repurpose URL/article/text to post"},
-            {"command": "learn", "description": "Teach Buxbi a rule or improvement"},
+            {"command": "learn", "description": "Teach Buxbi a tech, document, or rule"},
+            {"command": "topics", "description": "View stored Knowledge Vault topics"},
+            {"command": "intimate", "description": "Trigger weekly knowledge refresh"},
             {"command": "status", "description": "Check 24/7 cloud container status"},
             {"command": "help", "description": "Show all commands and guides"}
         ]
@@ -204,21 +206,79 @@ class TelegramBot:
         inline_keyboard = {
             "inline_keyboard": [
                 [
-                    {"text": "📸 Add Custom Image", "callback_data": f"upload_image:{post_id}"},
-                    {"text": "✅ Approve & Post Now", "callback_data": f"approve_now:{post_id}"}
+                    {"text": "🚀 Approve & Post Now", "callback_data": f"approve_now:{post_id}"},
+                    {"text": "📅 Schedule (08:30)", "callback_data": f"schedule_slot:{post_id}"}
                 ],
                 [
-                    {"text": "📅 Schedule (08:30)", "callback_data": f"schedule_slot:{post_id}"},
-                    {"text": "🔄 Regenerate Angle", "callback_data": f"regen_post:{post_id}"}
+                    {"text": "🎨 Edit GIF Style", "callback_data": f"edit_gif:{post_id}"},
+                    {"text": "📸 Upload Photo", "callback_data": f"upload_image:{post_id}"}
                 ],
                 [
-                    {"text": "🤝 Get 3 Connection Leads", "callback_data": f"send_leads:{post_id}"},
+                    {"text": "🔄 Regenerate Angle", "callback_data": f"regen_post:{post_id}"},
+                    {"text": "🤝 Get 3 Leads", "callback_data": f"send_leads:{post_id}"}
+                ],
+                [
                     {"text": "❌ Discard", "callback_data": f"discard_post:{post_id}"}
                 ]
             ]
         }
 
         return self.send_message(message_html, reply_markup=inline_keyboard, chat_id=chat_id)
+
+    def send_gif_customization_menu(self, post_id: int, current_theme: str = "Champagne & Bronze (5)", current_size: str = "Poster (1400x800)", chat_id: Optional[str] = None):
+        """Send interactive menu to choose one of 3 authentic themes and canvas resolutions."""
+        message_html = (
+            f"<b>🎨 CUSTOMIZE ARCHITECTURAL GIF (Post #{post_id})</b>\n\n"
+            f"• <b>Active Theme:</b> {current_theme}\n"
+            f"• <b>Active Resolution:</b> {current_size}\n\n"
+            "<i>Select a theme or canvas size below to immediately re-render the animation:</i>"
+        )
+        inline_keyboard = {
+            "inline_keyboard": [
+                [
+                    {"text": "🏆 Champagne & Bronze (5)", "callback_data": f"gif_theme:5:{post_id}"},
+                    {"text": "⚡ Graphite & Blue (6)", "callback_data": f"gif_theme:6:{post_id}"}
+                ],
+                [
+                    {"text": "🔮 Royal Amethyst (4)", "callback_data": f"gif_theme:4:{post_id}"}
+                ],
+                [
+                    {"text": "🖼 Poster (1400x800 - Default)", "callback_data": f"gif_size:poster:{post_id}"},
+                    {"text": "🖥 Landscape (1200x630)", "callback_data": f"gif_size:landscape:{post_id}"}
+                ],
+                [
+                    {"text": "📱 Portrait (1080x1350)", "callback_data": f"gif_size:portrait:{post_id}"},
+                    {"text": "⬛ Square (1080x1080)", "callback_data": f"gif_size:square:{post_id}"}
+                ],
+                [
+                    {"text": "⬅️ Back to Post Draft", "callback_data": f"back_to_draft:{post_id}"}
+                ]
+            ]
+        }
+        return self.send_message(message_html, reply_markup=inline_keyboard, chat_id=chat_id)
+
+    def send_weekly_intimation(self, chat_id: Optional[str] = None):
+        """Send proactive weekly prompt to Madan requesting new documents, technologies, or insights."""
+        msg = (
+            "🧠 <b>BUXBI WEEKLY KNOWLEDGE REFRESH</b>\n\n"
+            "Hey Madan! To ensure our daily LinkedIn content stays unmatched in technical depth and strictly ahead of the curve, "
+            "what new technologies, frameworks, or production lessons should we master this week?\n\n"
+            "<b>How you can feed me new insights:</b>\n"
+            "• <b>Send a document:</b> Drop any PDF whitepaper, Markdown (.md), or text (.txt) file directly in this chat.\n"
+            "• <b>Send technology names:</b> Type e.g. <code>/learn Moonshine STT, vLLM chunked prefill, BitNet b1.58</code>.\n"
+            "• <b>Send production notes:</b> Share real bugs, memory bottlenecks, or latency numbers you ran into.\n\n"
+            "<i>I will ingest the data, research external technical sources, analyze the mechanics, and craft this week's posts and animated architectural GIFs around them!</i>"
+        )
+        inline_keyboard = {
+            "inline_keyboard": [
+                [
+                    {"text": "📚 View Knowledge Vault", "callback_data": "view_vault:0"},
+                    {"text": "🚀 Draft Today's Post", "callback_data": "draft_new:0"}
+                ]
+            ]
+        }
+        return self.send_message(msg, reply_markup=inline_keyboard, chat_id=chat_id)
+
 
     def send_final_confirmation_card(self, post_id: int, topic: str, draft_text: str, image_url: str, theme_name: Optional[str] = None, chat_id: Optional[str] = None, public_media_url: Optional[str] = None):
         """Send preview of post with attached image and ask for final confirmation before posting."""

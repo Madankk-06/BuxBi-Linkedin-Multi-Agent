@@ -1,0 +1,8 @@
+[
+  "Nuance over absolute claims: Avoid implying pre-filtering always saves compute. Acknowledge engineering trade-offs between pre-filtering, integrated filtering, and post-filtering based on selectivity and recall requirements.",
+  "Realistic benchmarks: Present latency metrics (such as 15ms or p99) as benchmarks or targets to measure against, not as universal guarantees.",
+  "Graph mechanics: When discussing filtered HNSW or graph retrieval, explain that graph connectivity must be preserved during filtered traversal to prevent disconnected components.",
+  "Measured downstream claims: Describe hallucination reduction as a possible downstream benefit of cleaner context, rather than a guaranteed fix.",
+  "Pragmatic phrasing: Use 'optimize metadata filtering and reduce unnecessary computation' instead of exaggerated claims like 'solve the compute waste'.",
+  "Formatting rules: Zero asterisks (* or **) anywhere in the text. Zero arrow symbols (↳, →, ⇒). Use standard numbers (1., 2., 3.) for main layers and clean bullet points (•) for sub-points."
+]

@@ -21,6 +21,9 @@ data/user_uploads/*
 !data/user_uploads/.gitkeep
 data/generated_cards/*
 !data/generated_cards/.gitkeep
+data/generated_gifs/*
+!data/generated_gifs/.gitkeep
 test_*
 WhatsApp*
 *.jpeg
+

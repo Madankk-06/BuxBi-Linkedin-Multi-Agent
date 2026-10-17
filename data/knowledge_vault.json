@@ -1,0 +1,17 @@
+{
+  "topics": [
+    {
+      "name": "Moonshine Speech-to-Text",
+      "category": "Inference",
+      "summary": "On-device ASR leveraging encoder-only transformers and speculative decoding for sub-100ms latency.",
+      "mechanics": "Replaces the standard encoder-decoder architecture with an encoder-only transformer to eliminate cross-attention overhead. Implements speculative token verification where a small draft model proposes tokens that are verified in parallel by the main model, reducing sequential decoding steps. Uses dynamic sequence bucketing to optimize memory access patterns and batch processing for variable-length audio inputs on edge hardware.",
+      "tradeoffs": "Achieves 5x lower latency than Whisper, targeting sub-100ms real-time transcription. Trade-off involves potential accuracy degradation compared to larger decoder-based models due to the encoder-only constraint and reliance on speculative sampling correctness.",
+      "comparison": "Whisper uses a heavy encoder-decoder architecture with sequential autoregressive decoding, resulting in higher latency and memory footprint. Moonshine's encoder-only design and speculative verification significantly reduce compute per token, making it viable for real-time on-device use where Whisper is typically too slow or resource-intensive.",
+      "source": "Madan Tech Seed",
+      "status": "used_in_post",
+      "added_at": "2026-10-18 01:52:09",
+      "used_at": "2026-10-18 01:52:09"
+    }
+  ],
+  "weekly_intimation_last_sent": null
+}
