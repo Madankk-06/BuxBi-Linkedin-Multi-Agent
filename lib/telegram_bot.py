@@ -149,6 +149,36 @@ class TelegramBot:
             logger.error(f"Failed to send Telegram animation: {e}")
             return {}
 
+    def send_document(self, document_path_or_url: str, caption: Optional[str] = None, chat_id: Optional[str] = None) -> dict:
+        """Send an uncompressed document (raw binary file) to Telegram, bypassing image/video compression."""
+        if not self.token:
+            return {}
+        chat_id = chat_id or self.default_chat_id
+        clean_caption = (caption or "").replace("**", "").replace("*", "")
+
+        try:
+            if os.path.exists(document_path_or_url):
+                with open(document_path_or_url, "rb") as f:
+                    data = {
+                        "chat_id": chat_id,
+                        "caption": clean_caption,
+                        "parse_mode": "HTML"
+                    }
+                    resp = requests.post(f"{self.api_url}/sendDocument", data=data, files={"document": f}, timeout=60)
+                    return resp.json()
+            else:
+                payload = {
+                    "chat_id": chat_id,
+                    "document": document_path_or_url,
+                    "caption": clean_caption,
+                    "parse_mode": "HTML"
+                }
+                resp = requests.post(f"{self.api_url}/sendDocument", json=payload, timeout=30)
+                return resp.json()
+        except Exception as e:
+            logger.error(f"Failed to send Telegram document: {e}")
+            return {}
+
     def download_file(self, file_id: str, dest_path: str) -> Optional[str]:
         """Download a photo/document from Telegram given its file_id."""
         if not self.token:
@@ -186,9 +216,24 @@ class TelegramBot:
 
         if image_url:
             if str(image_url).lower().endswith(".gif"):
+                # 1. Inline animation for rapid in-chat playback
                 self.send_animation(image_url, caption=f"🎬 <b>Animated Architecture for Post #{post_id}</b>\n📌 <i>{escaped_topic}</i>", chat_id=chat_id)
+                # 2. Lossless original file as document so the user can download the raw uncompressed GIF
+                self.send_document(
+                    image_url,
+                    caption=(
+                        f"📁 <b>Lossless High-Resolution GIF (Direct Download)</b>\n"
+                        f"📌 Post #{post_id} | Raw file with 100% crystal-sharp text & zero Telegram compression."
+                    ),
+                    chat_id=chat_id
+                )
             else:
                 self.send_photo(image_url, caption=f"🎨 <b>Architecture Diagram for Post #{post_id}</b>\n📌 <i>{escaped_topic}</i>", chat_id=chat_id)
+                self.send_document(
+                    image_url,
+                    caption=f"📁 <b>Lossless Original Diagram (Direct Download)</b>\n📌 Post #{post_id}",
+                    chat_id=chat_id
+                )
 
         char_count = len(draft_text)
         

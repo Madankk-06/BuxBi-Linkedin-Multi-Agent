@@ -960,44 +960,43 @@ def export_pure_gif(frames, output_gif, fps=12):
     ffmpeg_exe = find_ffmpeg()
 
     if ffmpeg_exe:
-        temp_dir = Path("/tmp/linkedin_gif_frames")
-        temp_dir.mkdir(parents=True, exist_ok=True)
-
-        for i, f in enumerate(frames):
-            f.save(temp_dir / f"frame_{i:04d}.png")
-
-        palette_file = temp_dir / "palette.png"
-
-        cmd_pal = [
-            ffmpeg_exe, "-y",
-            "-framerate", str(fps),
-            "-i", str(temp_dir / "frame_%04d.png"),
-            "-vf", "palettegen=stats_mode=full:max_colors=256:reserve_transparent=0",
-            str(palette_file)
-        ]
-        subprocess.run(cmd_pal, capture_output=True, check=True)
-
-        cmd_gif = [
-            ffmpeg_exe, "-y",
-            "-framerate", str(fps),
-            "-i", str(temp_dir / "frame_%04d.png"),
-            "-i", str(palette_file),
-            "-lavfi", "paletteuse=dither=none:diff_mode=rectangle",
-            "-loop", "0",
-            output_gif
-        ]
-        subprocess.run(cmd_gif, capture_output=True, check=True)
-
-        for f in temp_dir.glob("*"):
-            try:
-                f.unlink()
-            except Exception:
-                pass
+        import tempfile
+        import shutil
+        temp_dir_str = tempfile.mkdtemp(prefix="linkedin_gif_")
+        temp_dir = Path(temp_dir_str)
         try:
-            temp_dir.rmdir()
-        except Exception:
-            pass
+            logger.info(f"Rendering high-fidelity GIF via FFmpeg 2-pass palettegen ({ffmpeg_exe})...")
+            for i, f in enumerate(frames):
+                f.save(temp_dir / f"frame_{i:04d}.png")
+
+            palette_file = temp_dir / "palette.png"
+
+            # Pass 1: Generate high-definition 256-color palette
+            cmd_pal = [
+                ffmpeg_exe, "-y",
+                "-framerate", str(fps),
+                "-i", str(temp_dir / "frame_%04d.png"),
+                "-vf", "palettegen=stats_mode=full:max_colors=256:reserve_transparent=0",
+                str(palette_file)
+            ]
+            subprocess.run(cmd_pal, capture_output=True, check=True)
+
+            # Pass 2: Apply optimal palette with clean crisp edges (dither=none)
+            cmd_gif = [
+                ffmpeg_exe, "-y",
+                "-framerate", str(fps),
+                "-i", str(temp_dir / "frame_%04d.png"),
+                "-i", str(palette_file),
+                "-lavfi", "paletteuse=dither=none:diff_mode=rectangle",
+                "-loop", "0",
+                output_gif
+            ]
+            subprocess.run(cmd_gif, capture_output=True, check=True)
+            logger.info(f"Successfully generated pure 2-pass FFmpeg GIF at: {output_gif}")
+        finally:
+            shutil.rmtree(temp_dir_str, ignore_errors=True)
     else:
+        logger.warning("FFmpeg not found; falling back to Pillow GIF encoder.")
         duration_ms = int(1000 / fps)
         frames[0].save(
             output_gif,
