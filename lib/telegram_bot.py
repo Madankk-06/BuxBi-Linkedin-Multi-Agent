@@ -273,53 +273,11 @@ class TelegramBot:
             db_direct_url = f"{render_base}/dl/raw/{post_id}"
             download_url = public_cdn_url if (public_cdn_url and not public_cdn_url.startswith(f"{render_base}/media/")) else db_direct_url
 
-            # 3. Send 1080p High-Definition MP4 Video for smooth in-app preview
-            if os.path.exists(mp4_path):
-                self.send_video(
-                    mp4_path,
-                    caption=(
-                        f"🎬 <b>1080p HD Architecture Motion (Post #{post_id})</b>\n"
-                        f"📌 <i>{escaped_topic}</i>\n"
-                        f"✨ TrueColor 60fps | Tap to play in crystal clarity"
-                    ),
-                    chat_id=chat_id
-                )
-            elif str(image_url).lower().endswith(".gif"):
-                self.send_animation(
-                    image_url,
-                    caption=f"🎬 <b>Animated Architecture for Post #{post_id}</b>\n📌 <i>{escaped_topic}</i>",
-                    chat_id=chat_id
-                )
-            else:
-                self.send_photo(
-                    image_url,
-                    caption=f"🎨 <b>Architecture Diagram for Post #{post_id}</b>\n📌 <i>{escaped_topic}</i>",
-                    chat_id=chat_id
-                )
-
-            # 4. Deliver uncompressed master ZIP to bypass Telegram's GIF-transcoding engine
-            try:
-                import zipfile
-                zip_path = os.path.join(os.path.dirname(image_url), f"post_{post_id}_retina_master.zip")
-                with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
-                    zf.write(image_url, arcname=filename)
-                self.send_document(
-                    zip_path,
-                    caption=(
-                        f"📦 <b>Master 2800x1600 Retina GIF (Pure Lossless Archive)</b>\n"
-                        f"📌 Post #{post_id} | Uncompressed, un-transcoded master file\n"
-                        f"👉 Tap to download in Telegram or use the 1-click web link below."
-                    ),
-                    chat_id=chat_id
-                )
-            except Exception as e:
-                logger.warning(f"Could not send master ZIP document: {e}")
-
         char_count = len(draft_text)
         dl_section = ""
         if download_url:
             dl_section = (
-                f"\n📥 <b>Master High-Resolution GIF (Direct Web Download):</b>\n"
+                f"\n📥 <b>Master High-Resolution GIF (Engine Script Generated):</b>\n"
                 f"🔗 <a href=\"{download_url}\">Click here to Download Master 2800x1600 GIF</a>\n"
                 f"<i>💡 Download to review or edit, then send it back to BuxBi right here in chat to combine with this post!</i>\n"
             )
