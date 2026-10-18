@@ -145,10 +145,12 @@ THEME_ALIASES = {
 }
 
 SIZE_PRESETS = {
-    "landscape": (1200, 630),
-    "portrait": (1080, 1350),
-    "square": (1080, 1080),
-    "poster": (1400, 800),
+    "poster": (2800, 1600),       # High-Definition 2x Architecture Poster (Crisp on Laptop & Retina)
+    "poster_1x": (1400, 800),    # Standard 1x Poster
+    "landscape": (2400, 1260),   # 2x High-Definition Landscape
+    "landscape_1x": (1200, 630), # 1x Landscape
+    "portrait": (1600, 2000),    # 4:5 Vertical Architecture Format
+    "square": (2000, 2000),      # 1:1 Square Feed Format
 }
 
 # ==============================================================================
@@ -562,25 +564,38 @@ def render_base_diagram(width, height, content, theme_key, font_family="modern")
 
         is_hero = layer.get("hero", False) or (num_layers >= 5 and i == 2)
 
-        # A. Dark Solid Pill Header at Top of Column (Exactly like reference)
+        # A. Dark Solid Pill Header at Top of Column (Auto-fits text to avoid truncation)
         pill_box = [col_x0, current_y, col_x1, current_y + header_pill_h]
-        draw.rounded_rectangle(pill_box, radius=int(8 * scale), fill=theme["pill_dark"])
+        draw.rounded_rectangle(pill_box, radius=max(4, int(8 * scale)), fill=theme["pill_dark"])
 
         layer_name = layer.get("name", f"Layer {i+1}")
         badge_text = str(layer.get("badge", i + 1))
         header_title = f"{badge_text}. {layer_name}"
-        hb_bb = draw.textbbox((0, 0), header_title, font=f_pill)
+
+        pill_w_available = col_x1 - col_x0 - int(12 * scale_x)
+        curr_f_pill = f_pill
+        hb_bb = draw.textbbox((0, 0), header_title, font=curr_f_pill)
+        if (hb_bb[2] - hb_bb[0]) > pill_w_available:
+            scaled_pill_size = max(9, int(pill_font_size * (pill_w_available / max(1, hb_bb[2] - hb_bb[0]))))
+            curr_f_pill = get_font_instance(font_family, scaled_pill_size, bold=True)
+            hb_bb = draw.textbbox((0, 0), header_title, font=curr_f_pill)
+            if (hb_bb[2] - hb_bb[0]) > pill_w_available:
+                while header_title and (draw.textbbox((0, 0), header_title + "...", font=curr_f_pill)[2] - draw.textbbox((0, 0), header_title + "...", font=curr_f_pill)[0]) > pill_w_available:
+                    header_title = header_title[:-1]
+                header_title = header_title + "..."
+                hb_bb = draw.textbbox((0, 0), header_title, font=curr_f_pill)
+
         hb_w = hb_bb[2] - hb_bb[0]
         hb_h = hb_bb[3] - hb_bb[1]
         draw.text(((col_x0 + col_x1 - hb_w) // 2, current_y + (header_pill_h - hb_h) // 2 - 1),
-                  header_title, fill=(255, 255, 255), font=f_pill)
+                  header_title, fill=(255, 255, 255), font=curr_f_pill)
 
         # B. Gradient Card Container
         border_col = theme["hero_border"] if is_hero else theme["card_border"]
-        border_w = 2 if is_hero else 1
+        border_w = max(1, int(2 * scale)) if is_hero else max(1, int(1 * scale))
         card_box = [col_x0, layer_top_y, col_x1, layer_bottom_y]
         draw_gradient_card(draw, card_box, theme["card_grad_top"], theme["card_grad_bot"],
-                           radius=int(10 * scale), outline=border_col, width=border_w)
+                           radius=max(6, int(10 * scale)), outline=border_col, width=border_w)
 
         # C. Inner Item Cards (Pure White rounded cards like reference)
         items = layer.get("items", [])
@@ -608,7 +623,7 @@ def render_base_diagram(width, height, content, theme_key, font_family="modern")
             # Pure white card background with subtle outline
             draw.rounded_rectangle(
                 [item_box_x0, iy0, item_box_x1, iy1],
-                radius=int(6 * scale),
+                radius=max(4, int(6 * scale)),
                 fill=theme["item_card_bg"],
                 outline=theme["item_card_border"],
                 width=1
@@ -617,15 +632,15 @@ def render_base_diagram(width, height, content, theme_key, font_family="modern")
             it_raw = it if isinstance(it, str) else it.get("title", "")
             it_title, it_sub = split_item_text(it_raw)
 
-            # Icon Box with Soft Tint Background
+            # Icon Box with Soft Tint Background (Proportional to card width & height)
             icon_name = pick_icon_for_item(it_raw)
-            icon_box_size = max(20, int(item_h * 0.62))
-            icon_cx = item_box_x0 + int(14 * scale_x)
+            icon_box_size = max(18, min(int(item_h * 0.52), int((item_box_x1 - item_box_x0) * 0.20)))
+            icon_cx = item_box_x0 + int(icon_box_size // 2) + int(6 * scale_x)
             icon_cy = icy
 
             draw.rounded_rectangle(
                 [icon_cx - icon_box_size//2, icon_cy - icon_box_size//2, icon_cx + icon_box_size//2, icon_cy + icon_box_size//2],
-                radius=int(4 * scale),
+                radius=max(3, int(4 * scale)),
                 fill=theme["icon_badge_bg"],
                 outline=theme["item_card_border"],
                 width=1
@@ -633,17 +648,34 @@ def render_base_diagram(width, height, content, theme_key, font_family="modern")
             draw_vector_icon(draw, icon_name, icon_cx, icon_cy, size=int(icon_box_size * 0.85), color=theme["primary"])
 
             # Text Placement with auto-fit to avoid edge overflow
-            text_x = icon_cx + icon_box_size//2 + int(8 * scale_x)
-            max_text_w = item_box_x1 - text_x - int(5 * scale_x)
+            text_x = item_box_x0 + icon_box_size + int(12 * scale_x)
+            max_text_w = item_box_x1 - text_x - int(6 * scale_x)
 
             curr_f_title = f_item_title
             tb = draw.textbbox((0, 0), it_title, font=curr_f_title)
             if (tb[2] - tb[0]) > max_text_w:
-                curr_f_title = get_font_instance(font_family, max(10, int(item_title_size * 0.9)), bold=True)
+                scaled_t_size = max(9, int(item_title_size * (max_text_w / max(1, tb[2] - tb[0]))))
+                curr_f_title = get_font_instance(font_family, scaled_t_size, bold=True)
+                tb = draw.textbbox((0, 0), it_title, font=curr_f_title)
+                if (tb[2] - tb[0]) > max_text_w:
+                    while it_title and (draw.textbbox((0, 0), it_title + "...", font=curr_f_title)[2] - draw.textbbox((0, 0), it_title + "...", font=curr_f_title)[0]) > max_text_w:
+                        it_title = it_title[:-1]
+                    it_title = it_title + "..."
 
             if it_sub:
+                curr_f_sub = f_item_sub
+                sb = draw.textbbox((0, 0), it_sub, font=curr_f_sub)
+                if (sb[2] - sb[0]) > max_text_w:
+                    scaled_s_size = max(8, int(item_sub_size * (max_text_w / max(1, sb[2] - sb[0]))))
+                    curr_f_sub = get_font_instance(font_family, scaled_s_size, bold=False)
+                    sb = draw.textbbox((0, 0), it_sub, font=curr_f_sub)
+                    if (sb[2] - sb[0]) > max_text_w:
+                        while it_sub and (draw.textbbox((0, 0), it_sub + "...", font=curr_f_sub)[2] - draw.textbbox((0, 0), it_sub + "...", font=curr_f_sub)[0]) > max_text_w:
+                            it_sub = it_sub[:-1]
+                        it_sub = it_sub + "..."
+
                 draw.text((text_x, icy - int(10 * scale_y)), it_title, fill=theme["text_dark"], font=curr_f_title)
-                draw.text((text_x, icy + int(4 * scale_y)), it_sub, fill=theme["text_muted"], font=f_item_sub)
+                draw.text((text_x, icy + int(4 * scale_y)), it_sub, fill=theme["text_muted"], font=curr_f_sub)
             else:
                 tb_m = draw.textbbox((0, 0), it_title, font=curr_f_title)
                 th_m = tb_m[3] - tb_m[1]
@@ -652,12 +684,12 @@ def render_base_diagram(width, height, content, theme_key, font_family="modern")
             pin_pos = (spine_x, icy)
             item_pins.append(pin_pos)
 
-            draw.line([(spine_x, icy), (item_box_x0, icy)], fill=theme["connector_line"], width=int(1.5 * scale))
-            draw.ellipse([spine_x - 2, icy - 2, spine_x + 2, icy + 2], fill=theme["junction_dot"])
+            draw.line([(spine_x, icy), (item_box_x0, icy)], fill=theme["connector_line"], width=max(1, int(1.5 * scale)))
+            draw.ellipse([spine_x - max(1, int(2*scale)), icy - max(1, int(2*scale)), spine_x + max(1, int(2*scale)), icy + max(1, int(2*scale))], fill=theme["junction_dot"])
 
         # Intra-layer vertical spine
         if len(item_pins) > 1:
-            draw.line([item_pins[0], item_pins[-1]], fill=theme["connector_line"], width=int(2 * scale))
+            draw.line([item_pins[0], item_pins[-1]], fill=theme["connector_line"], width=max(1, int(2 * scale)))
             for k in range(len(item_pins) - 1):
                 paths.append({
                     "type": "spine",
@@ -971,28 +1003,44 @@ def export_pure_gif(frames, output_gif, fps=12):
 
             palette_file = temp_dir / "palette.png"
 
-            # Pass 1: Generate high-definition 256-color palette
+            # Pass 1: Generate high-definition 256-color palette with moving diff priority
             cmd_pal = [
                 ffmpeg_exe, "-y",
                 "-framerate", str(fps),
                 "-i", str(temp_dir / "frame_%04d.png"),
-                "-vf", "palettegen=stats_mode=full:max_colors=256:reserve_transparent=0",
+                "-vf", "palettegen=max_colors=256:stats_mode=diff:reserve_transparent=0",
                 str(palette_file)
             ]
             subprocess.run(cmd_pal, capture_output=True, check=True)
 
-            # Pass 2: Apply optimal palette with clean crisp edges (dither=none)
+            # Pass 2: Apply optimal palette with smooth antialiased Bayer dithering
             cmd_gif = [
                 ffmpeg_exe, "-y",
                 "-framerate", str(fps),
                 "-i", str(temp_dir / "frame_%04d.png"),
                 "-i", str(palette_file),
-                "-lavfi", "paletteuse=dither=none:diff_mode=rectangle",
+                "-lavfi", "paletteuse=dither=bayer:bayer_scale=3:diff_mode=rectangle",
                 "-loop", "0",
                 output_gif
             ]
             subprocess.run(cmd_gif, capture_output=True, check=True)
             logger.info(f"Successfully generated pure 2-pass FFmpeg GIF at: {output_gif}")
+
+            # Also generate high-definition 1080p MP4 (TrueColor 16.7M colors, zero banding)
+            mp4_path = str(Path(output_gif).with_suffix(".mp4"))
+            try:
+                cmd_mp4 = [
+                    ffmpeg_exe, "-y",
+                    "-framerate", str(fps),
+                    "-i", str(temp_dir / "frame_%04d.png"),
+                    "-c:v", "libx264", "-pix_fmt", "yuv420p",
+                    "-crf", "17", "-preset", "fast",
+                    mp4_path
+                ]
+                subprocess.run(cmd_mp4, capture_output=True, check=True)
+                logger.info(f"Successfully generated 1080p MP4 video at: {mp4_path}")
+            except Exception as e_mp4:
+                logger.warning(f"Notice: MP4 generation skipped ({e_mp4})")
         finally:
             shutil.rmtree(temp_dir_str, ignore_errors=True)
     else:

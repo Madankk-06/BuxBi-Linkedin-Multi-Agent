@@ -23,13 +23,28 @@ logger = logging.getLogger("LinkedinAgentMain")
 class HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path.startswith("/media/"):
-            filename = os.path.basename(self.path[len("/media/"):])
-            filepath = os.path.join("data", "user_uploads", filename)
+            rel_path = self.path[len("/media/"):]
+            if rel_path.startswith("gifs/"):
+                filename = os.path.basename(rel_path[len("gifs/"):])
+                filepath = os.path.join("data", "generated_gifs", filename)
+            else:
+                filename = os.path.basename(rel_path)
+                filepath = os.path.join("data", "user_uploads", filename)
+                if not os.path.exists(filepath):
+                    filepath = os.path.join("data", "generated_gifs", filename)
+
             if os.path.exists(filepath) and os.path.isfile(filepath):
                 ext = filename.lower().rsplit(".", 1)[-1] if "." in filename else "jpg"
-                mime_map = {"jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png", "gif": "image/gif"}
+                mime_map = {
+                    "jpg": "image/jpeg",
+                    "jpeg": "image/jpeg",
+                    "png": "image/png",
+                    "gif": "image/gif",
+                    "mp4": "video/mp4"
+                }
                 self.send_response(200)
-                self.send_header("Content-type", mime_map.get(ext, "image/jpeg"))
+                self.send_header("Content-type", mime_map.get(ext, "application/octet-stream"))
+                self.send_header("Content-Disposition", f'inline; filename="{filename}"')
                 self.end_headers()
                 with open(filepath, "rb") as f:
                     self.wfile.write(f.read())

@@ -65,9 +65,13 @@ class AgentOrchestrator:
 
         if image_path and spec_text:
             final_gif = str(out_dir / f"post_{post_id}_arch.gif")
+            final_mp4 = str(out_dir / f"post_{post_id}_arch.mp4")
+            temp_mp4 = str(Path(image_path).with_suffix(".mp4"))
             spec_file = str(out_dir / f"post_{post_id}_spec.txt")
             try:
                 os.rename(image_path, final_gif)
+                if os.path.exists(temp_mp4):
+                    os.rename(temp_mp4, final_mp4)
                 image_path = final_gif
                 db.update_post_image(post_id, final_gif)
             except Exception:
@@ -114,9 +118,13 @@ class AgentOrchestrator:
 
         if image_path and spec_text:
             final_gif = str(out_dir / f"post_{post_id}_arch.gif")
+            final_mp4 = str(out_dir / f"post_{post_id}_arch.mp4")
+            temp_mp4 = str(Path(image_path).with_suffix(".mp4"))
             spec_file = str(out_dir / f"post_{post_id}_spec.txt")
             try:
                 os.rename(image_path, final_gif)
+                if os.path.exists(temp_mp4):
+                    os.rename(temp_mp4, final_mp4)
                 image_path = final_gif
                 db.update_post_image(post_id, final_gif)
             except Exception:
@@ -326,11 +334,13 @@ class AgentOrchestrator:
                 spec_text = gif_engine.design_architecture_spec(post["topic"], post["draft_text"])
 
             telegram_bot.send_message(f"🎨 Re-rendering animated GIF with Theme [{theme_id}]...", chat_id=chat_id)
-            new_gif_path = gif_engine.render_gif(
+            ts = int(time.time())
+            new_gif_path = f"data/generated_gifs/post_{post_id}_theme_{theme_id}_{ts}.gif"
+            gif_engine.render_gif(
                 spec_text,
                 theme=theme_id,
                 size="poster",
-                output_path=f"data/generated_gifs/post_{post_id}_arch.gif",
+                output_path=new_gif_path,
                 fps=10,
                 duration=4.0
             )
@@ -357,11 +367,13 @@ class AgentOrchestrator:
                 spec_text = gif_engine.design_architecture_spec(post["topic"], post["draft_text"])
 
             telegram_bot.send_message(f"📐 Re-rendering animated GIF with Canvas Resolution [{size_preset}]...", chat_id=chat_id)
-            new_gif_path = gif_engine.render_gif(
+            ts = int(time.time())
+            new_gif_path = f"data/generated_gifs/post_{post_id}_{size_preset}_{ts}.gif"
+            gif_engine.render_gif(
                 spec_text,
                 theme="5",
                 size=size_preset,
-                output_path=f"data/generated_gifs/post_{post_id}_arch.gif",
+                output_path=new_gif_path,
                 fps=10,
                 duration=4.0
             )
