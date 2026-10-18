@@ -454,44 +454,79 @@ class AgentOrchestrator:
             telegram_bot.edit_message_reply_markup(chat_id, message_id)
 
 
-    def handle_user_image(self, file_id: str, chat_id: str):
-        """Receive a custom image sent by the user in Telegram, upload to public HTTPS host, attach it, and ask for confirmation."""
+    def handle_user_image(self, file_id: str, chat_id: str, media_kind: str = "photo",
+                          file_name: Optional[str] = None, mime_type: Optional[str] = None,
+                          reply_msg: Optional[dict] = None):
+        """Receive media (photo / GIF / MP4) from the user, attach it to the right post draft,
+        and send back the combined post (media + full post content) for final confirmation."""
         target_post = None
-        if self.pending_image_upload_post_id:
+
+        # 1. If the user replied to a specific draft card, attach to exactly that post
+        if reply_msg:
+            reply_text = reply_msg.get("text") or reply_msg.get("caption") or ""
+            m = re.search(r"Post #(\d+)", reply_text)
+            if m:
+                target_post = db.get_post(int(m.group(1)))
+            if not target_post:
+                target_post = self._reconstruct_post_from_message(reply_msg)
+
+        # 2. Explicit "Upload Photo" button target
+        if not target_post and self.pending_image_upload_post_id:
             target_post = db.get_post(self.pending_image_upload_post_id)
-            
+
+        # 3. Latest pending draft
         if not target_post:
             target_post = db.get_latest_pending_post() or db.get_latest_post()
-            
+
         if not target_post:
             telegram_bot.send_message(
-                "📸 I received your image! However, there is no pending post draft right now. "
-                "Type <b>'draft post'</b> to generate a new post draft first!",
+                "📸 I received your media, but I could not find the post draft it belongs to "
+                "(the server may have restarted).\n\n"
+                "👉 Long-press the post draft card, tap <b>Reply</b>, and send the GIF again as the reply. "
+                "Or type <b>draft post</b> to create a new draft.",
                 chat_id=chat_id
             )
             return
 
+        # Resolve the real file extension (Telegram delivers GIFs as MP4 'animation')
+        mime = (mime_type or "").lower()
+        name_ext = os.path.splitext(file_name or "")[1].lower()
+        if mime == "image/gif" or name_ext == ".gif":
+            ext = ".gif"
+        elif mime.startswith("video/") or media_kind in ("animation", "video") or name_ext == ".mp4":
+            ext = ".mp4"
+        elif mime == "image/png" or name_ext == ".png":
+            ext = ".png"
+        else:
+            ext = ".jpg"
+
         post_id = target_post["id"]
-        dest_path = f"data/user_uploads/post_{post_id}_{int(time.time())}.jpg"
+        telegram_bot.send_message(
+            f"📥 Got your media! Attaching it to <b>Post #{post_id}</b> and preparing the final combined post...",
+            chat_id=chat_id
+        )
+        Path("data/user_uploads").mkdir(parents=True, exist_ok=True)
+        dest_path = f"data/user_uploads/post_{post_id}_{int(time.time())}{ext}"
         downloaded = telegram_bot.download_file(file_id, dest_path)
-        
+
         if downloaded:
-            # Upload immediately to public HTTPS URL so Publora can ingest it and URL persists in Telegram
+            # Upload to a public HTTPS host so Publora/LinkedIn can ingest it
             public_url = publora_client.upload_local_media(downloaded)
             stored_image_ref = public_url or downloaded
             db.update_post_image(post_id, stored_image_ref)
             self.pending_image_upload_post_id = None
-            # Show preview with the image and request confirmation
             telegram_bot.send_final_confirmation_card(
                 post_id=post_id,
                 topic=target_post["topic"],
                 draft_text=target_post["draft_text"],
                 image_url=downloaded,
                 chat_id=chat_id,
-                public_media_url=public_url
+                public_media_url=public_url,
+                telegram_file_id=file_id,
+                media_kind=media_kind
             )
         else:
-            telegram_bot.send_message("⚠️ Could not download the image. Please try sending it again.", chat_id=chat_id)
+            telegram_bot.send_message("⚠️ Could not download the media. Please try sending it again.", chat_id=chat_id)
 
     def handle_user_document(self, file_id: str, file_name: str, chat_id: str):
         """Download and ingest technical whitepapers, text files, or architecture docs into Knowledge Vault."""

@@ -247,6 +247,7 @@ class TelegramBot:
         escaped_formula = _esc(hook_formula)
         escaped_draft = _esc(draft_text)
 
+        download_url = None
         if image_url:
             filename = os.path.basename(image_url)
             mp4_path = str(Path(image_url).with_suffix(".mp4"))
@@ -275,18 +276,36 @@ class TelegramBot:
                     chat_id=chat_id
                 )
 
-            # 2. Always deliver the uncompressed raw master document with direct web download link
-            self.send_document(
+            # 2. Deliver the uncompressed raw master document with direct web download link
+            doc_resp = self.send_document(
                 image_url,
                 caption=(
-                    f"📁 <b>Master High-Resolution GIF (Direct Download)</b>\n"
+                    f"📁 <b>Master High-Resolution GIF (Raw Uncompressed)</b>\n"
                     f"📌 Post #{post_id} | 2800x1600 Retina Architecture Poster\n"
-                    f"🔗 <b>Web Direct Download:</b> https://buxbi.onrender.com/media/gifs/{filename}"
+                    f"👉 Download from Telegram file above or use the web link below."
                 ),
                 chat_id=chat_id
             )
 
+            file_id = None
+            if isinstance(doc_resp, dict) and doc_resp.get("ok"):
+                file_id = doc_resp.get("result", {}).get("document", {}).get("file_id")
+
+            render_base = os.getenv("RENDER_EXTERNAL_URL", "https://buxbi.onrender.com").rstrip("/")
+            if file_id:
+                # Durable link proxying Telegram's CDN via Render (works even after Render restart/redeploy)
+                download_url = f"{render_base}/dl/{file_id}/{filename}"
+            else:
+                download_url = f"{render_base}/media/gifs/{filename}"
+
         char_count = len(draft_text)
+        dl_section = ""
+        if download_url:
+            dl_section = (
+                f"\n📥 <b>Master High-Resolution GIF:</b>\n"
+                f"🔗 <a href=\"{download_url}\">Click here to Download Master GIF</a>\n"
+                f"<i>💡 Download to review or edit, then send it back to BuxBi right here in chat to combine with this post!</i>\n"
+            )
         
         message_html = (
             f"<b>🚀 NEW GEN AI LINKEDIN POST DRAFT</b>\n\n"
@@ -296,28 +315,35 @@ class TelegramBot:
             f"<b>--- Post Preview ---</b>\n\n"
             f"{escaped_draft}\n\n"
             f"<b>---------------------</b>\n"
+            f"{dl_section}\n"
             f"<i>Tap an option below to manage this post:</i>"
         )
 
-        inline_keyboard = {
-            "inline_keyboard": [
-                [
-                    {"text": "🚀 Approve & Post Now", "callback_data": f"approve_now:{post_id}"},
-                    {"text": "📅 Schedule (08:30)", "callback_data": f"schedule_slot:{post_id}"}
-                ],
-                [
-                    {"text": "🎨 Edit GIF Style", "callback_data": f"edit_gif:{post_id}"},
-                    {"text": "📸 Upload Photo", "callback_data": f"upload_image:{post_id}"}
-                ],
-                [
-                    {"text": "🔄 Regenerate Angle", "callback_data": f"regen_post:{post_id}"},
-                    {"text": "🤝 Get 3 Leads", "callback_data": f"send_leads:{post_id}"}
-                ],
-                [
-                    {"text": "❌ Discard", "callback_data": f"discard_post:{post_id}"}
-                ]
+        inline_keyboard_rows = [
+            [
+                {"text": "🚀 Approve & Post Now", "callback_data": f"approve_now:{post_id}"},
+                {"text": "📅 Schedule (08:30)", "callback_data": f"schedule_slot:{post_id}"}
             ]
-        }
+        ]
+        if download_url:
+            inline_keyboard_rows.append([
+                {"text": "📥 Download Master GIF (Web Link)", "url": download_url}
+            ])
+        inline_keyboard_rows.extend([
+            [
+                {"text": "🎨 Edit GIF Style", "callback_data": f"edit_gif:{post_id}"},
+                {"text": "📸 Upload Photo", "callback_data": f"upload_image:{post_id}"}
+            ],
+            [
+                {"text": "🔄 Regenerate Angle", "callback_data": f"regen_post:{post_id}"},
+                {"text": "🤝 Get 3 Leads", "callback_data": f"send_leads:{post_id}"}
+            ],
+            [
+                {"text": "❌ Discard", "callback_data": f"discard_post:{post_id}"}
+            ]
+        ])
+
+        inline_keyboard = {"inline_keyboard": inline_keyboard_rows}
 
         return self.send_message(message_html, reply_markup=inline_keyboard, chat_id=chat_id)
 
@@ -376,24 +402,47 @@ class TelegramBot:
         return self.send_message(msg, reply_markup=inline_keyboard, chat_id=chat_id)
 
 
-    def send_final_confirmation_card(self, post_id: int, topic: str, draft_text: str, image_url: str, theme_name: Optional[str] = None, chat_id: Optional[str] = None, public_media_url: Optional[str] = None):
-        """Send preview of post with attached image and ask for final confirmation before posting."""
+    def send_final_confirmation_card(
+        self,
+        post_id: int,
+        topic: str,
+        draft_text: str,
+        image_url: str,
+        theme_name: Optional[str] = None,
+        chat_id: Optional[str] = None,
+        public_media_url: Optional[str] = None,
+        telegram_file_id: Optional[str] = None,
+        media_kind: Optional[str] = None,
+        **kwargs
+    ):
+        """Send preview of post with attached image/video/GIF and ask for final confirmation before posting."""
         escaped_topic = _esc(topic)
         escaped_draft = _esc(draft_text)
         theme_caption = f"\n🎨 <b>Theme:</b> {_esc(theme_name)}" if theme_name else ""
         caption = (
-            f"🖼 <b>Post Preview with Your Attached Image</b>{theme_caption}\n"
+            f"🖼 <b>Post Preview with Your Attached Media</b>{theme_caption}\n"
             f"📌 <b>Topic:</b> {escaped_topic}\n\n"
-            f"Does this look good and ready to post to LinkedIn?"
+            f"✨ Attached: <code>{os.path.basename(image_url)}</code>\n"
+            f"Ready to publish to LinkedIn!"
         )
-        if image_url.lower().endswith(".gif"):
+
+        ext = os.path.splitext(image_url)[1].lower()
+        if ext in (".mp4", ".mov") or media_kind in ("animation", "video"):
+            try:
+                if ext == ".mp4" and media_kind != "animation":
+                    self.send_video(image_url, caption=caption, chat_id=chat_id)
+                else:
+                    self.send_animation(image_url, caption=caption, chat_id=chat_id)
+            except Exception:
+                self.send_document(image_url, caption=caption, chat_id=chat_id)
+        elif ext == ".gif":
             self.send_animation(image_url, caption=caption, chat_id=chat_id)
         else:
             self.send_photo(image_url, caption=caption, chat_id=chat_id)
 
-        media_line = f"\n🖼 <b>Media URL:</b> {public_media_url}\n" if public_media_url else ""
+        media_line = f"\n🌐 <b>Public Media URL:</b> <a href=\"{public_media_url}\">View Online</a>\n" if public_media_url else ""
         message_html = (
-            f"<b>📋 Final Post Draft for Post #{post_id}</b>\n\n"
+            f"<b>📋 Final Combined Post for Post #{post_id}</b>\n\n"
             f"{escaped_draft}\n"
             f"{media_line}\n"
             f"<i>Tap below to confirm and post:</i>"

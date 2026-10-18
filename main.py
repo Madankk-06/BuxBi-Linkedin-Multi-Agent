@@ -7,7 +7,7 @@ from apscheduler.triggers.cron import CronTrigger
 
 import os
 import threading
-from http.server import HTTPServer, BaseHTTPRequestHandler
+from http.server import HTTPServer, ThreadingHTTPServer, BaseHTTPRequestHandler
 
 from core.config import config
 from core.database import db
@@ -21,9 +21,64 @@ logging.basicConfig(
 logger = logging.getLogger("LinkedinAgentMain")
 
 class HealthHandler(BaseHTTPRequestHandler):
+    MIME_MAP = {
+        "jpg": "image/jpeg",
+        "jpeg": "image/jpeg",
+        "png": "image/png",
+        "gif": "image/gif",
+        "mp4": "video/mp4"
+    }
+
+    def _serve_telegram_file(self):
+        """Stream a file stored on Telegram servers: /dl/<file_id>/<filename>.
+
+        Telegram is the durable storage here, so the link keeps working even after
+        Render restarts/redeploys wipe the local disk.
+        """
+        from urllib.parse import unquote
+        parts = self.path.split("?", 1)[0][len("/dl/"):].split("/")
+        file_id = unquote(parts[0]) if parts and parts[0] else ""
+        filename = os.path.basename(unquote(parts[1])) if len(parts) > 1 and parts[1] else "buxbi_media.gif"
+        if not file_id or not config.TELEGRAM_BOT_TOKEN:
+            self.send_response(404)
+            self.end_headers()
+            return
+        try:
+            api = f"https://api.telegram.org/bot{config.TELEGRAM_BOT_TOKEN}"
+            info = requests.get(f"{api}/getFile", params={"file_id": file_id}, timeout=20).json()
+            if not info.get("ok"):
+                self.send_response(404)
+                self.send_header("Content-type", "text/plain")
+                self.end_headers()
+                self.wfile.write(b"File not found or expired on Telegram.")
+                return
+            tg_path = info["result"]["file_path"]
+            dl = requests.get(f"https://api.telegram.org/file/bot{config.TELEGRAM_BOT_TOKEN}/{tg_path}", timeout=60)
+            if dl.status_code != 200:
+                self.send_response(502)
+                self.end_headers()
+                return
+            data = dl.content
+            ext = filename.lower().rsplit(".", 1)[-1] if "." in filename else "gif"
+            self.send_response(200)
+            self.send_header("Content-type", self.MIME_MAP.get(ext, "application/octet-stream"))
+            self.send_header("Content-Length", str(len(data)))
+            self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
+            self.send_header("Cache-Control", "public, max-age=86400")
+            self.end_headers()
+            self.wfile.write(data)
+        except Exception as e:
+            logger.error(f"Telegram file proxy failed: {e}")
+            self.send_response(500)
+            self.end_headers()
+
     def do_GET(self):
+        if self.path.startswith("/dl/"):
+            self._serve_telegram_file()
+            return
+
         if self.path.startswith("/media/"):
-            rel_path = self.path[len("/media/"):]
+            rel_path = self.path.split("?", 1)[0][len("/media/"):]
             if rel_path.startswith("gifs/"):
                 filename = os.path.basename(rel_path[len("gifs/"):])
                 filepath = os.path.join("data", "generated_gifs", filename)
@@ -35,15 +90,8 @@ class HealthHandler(BaseHTTPRequestHandler):
 
             if os.path.exists(filepath) and os.path.isfile(filepath):
                 ext = filename.lower().rsplit(".", 1)[-1] if "." in filename else "jpg"
-                mime_map = {
-                    "jpg": "image/jpeg",
-                    "jpeg": "image/jpeg",
-                    "png": "image/png",
-                    "gif": "image/gif",
-                    "mp4": "video/mp4"
-                }
                 self.send_response(200)
-                self.send_header("Content-type", mime_map.get(ext, "application/octet-stream"))
+                self.send_header("Content-type", self.MIME_MAP.get(ext, "application/octet-stream"))
                 self.send_header("Content-Disposition", f'inline; filename="{filename}"')
                 self.end_headers()
                 with open(filepath, "rb") as f:
@@ -64,7 +112,7 @@ class HealthHandler(BaseHTTPRequestHandler):
 def start_health_server():
     port = int(os.getenv("PORT", 10000))
     try:
-        server = HTTPServer(("0.0.0.0", port), HealthHandler)
+        server = ThreadingHTTPServer(("0.0.0.0", port), HealthHandler)
         t = threading.Thread(target=server.serve_forever, daemon=True)
         t.start()
         logger.info(f"Healthcheck HTTP server active on port {port}")
@@ -129,7 +177,29 @@ def poll_telegram_updates():
                         chat_id = str(msg["chat"]["id"])
                         # Get highest resolution photo
                         photo_file_id = msg["photo"][-1]["file_id"]
-                        orchestrator.handle_user_image(photo_file_id, chat_id)
+                        orchestrator.handle_user_image(photo_file_id, chat_id, media_kind="photo", reply_msg=msg.get("reply_to_message"))
+
+                    # 2b. Handle GIFs (Telegram delivers them as 'animation') sent back by the user
+                    elif "message" in update and "animation" in update["message"]:
+                        msg = update["message"]
+                        chat_id = str(msg["chat"]["id"])
+                        anim = msg["animation"]
+                        orchestrator.handle_user_image(
+                            anim["file_id"], chat_id, media_kind="animation",
+                            file_name=anim.get("file_name"), mime_type=anim.get("mime_type"),
+                            reply_msg=msg.get("reply_to_message")
+                        )
+
+                    # 2c. Handle MP4 videos sent back by the user
+                    elif "message" in update and "video" in update["message"]:
+                        msg = update["message"]
+                        chat_id = str(msg["chat"]["id"])
+                        vid = msg["video"]
+                        orchestrator.handle_user_image(
+                            vid["file_id"], chat_id, media_kind="video",
+                            file_name=vid.get("file_name"), mime_type=vid.get("mime_type"),
+                            reply_msg=msg.get("reply_to_message")
+                        )
 
                     # 3. Handle images or technical documents sent by user
                     elif "message" in update and "document" in update["message"]:
@@ -138,8 +208,12 @@ def poll_telegram_updates():
                         doc = msg["document"]
                         mime = doc.get("mime_type", "")
                         file_name = doc.get("file_name", "document.txt")
-                        if mime.startswith("image/"):
-                            orchestrator.handle_user_image(doc["file_id"], chat_id)
+                        if mime.startswith("image/") or mime.startswith("video/"):
+                            orchestrator.handle_user_image(
+                                doc["file_id"], chat_id, media_kind="document",
+                                file_name=file_name, mime_type=mime,
+                                reply_msg=msg.get("reply_to_message")
+                            )
                         else:
                             orchestrator.handle_user_document(doc["file_id"], file_name, chat_id)
 
