@@ -145,12 +145,10 @@ THEME_ALIASES = {
 }
 
 SIZE_PRESETS = {
-    "poster": (2800, 1600),       # High-Definition 2x Architecture Poster (Crisp on Laptop & Retina)
-    "poster_1x": (1400, 800),    # Standard 1x Poster
-    "landscape": (2400, 1260),   # 2x High-Definition Landscape
-    "landscape_1x": (1200, 630), # 1x Landscape
-    "portrait": (1600, 2000),    # 4:5 Vertical Architecture Format
-    "square": (2000, 2000),      # 1:1 Square Feed Format
+    "poster": (1400, 800),       # High-density tech architecture format (Native engine resolution, fits Render 512MB RAM)
+    "landscape": (1200, 630),    # Standard 16:9 Landscape
+    "portrait": (1080, 1350),    # Standard 4:5 Mobile Portrait
+    "square": (1080, 1080),      # Standard 1:1 Square
 }
 
 # ==============================================================================
@@ -940,10 +938,9 @@ def draw_popping_particle(draw, pos, theme, r_glow=7, r_core=3):
     # 4. Pure white highlight center
     draw.ellipse([cx - r_core, cy - r_core, cx + r_core, cy + r_core], fill=theme["particle_core"])
 
-def render_animated_frames(base_img, paths, theme_key, duration=16.0, fps=12):
+def render_frames_to_disk(base_img, paths, theme_key, temp_dir: Path, duration=4.0, fps=10) -> int:
     theme = THEMES[theme_key]
     total_frames = int(duration * fps)
-    frames = []
 
     for f_idx in range(total_frames):
         curr_time = f_idx / fps
@@ -963,8 +960,32 @@ def render_animated_frames(base_img, paths, theme_key, duration=16.0, fps=12):
             draw.ellipse([pos_tail[0]-2.5, pos_tail[1]-2.5, pos_tail[0]+2.5, pos_tail[1]+2.5], fill=theme["particle_glow"])
             draw_popping_particle(draw, pos, theme, r_glow=7, r_core=3)
 
-        frames.append(frame.convert("RGB"))
+        rgb = frame.convert("RGB")
+        rgb.save(temp_dir / f"frame_{f_idx:04d}.png", optimize=False)
+        del frame
+        del rgb
 
+    return total_frames
+
+# Backward-compatibility alias
+def render_animated_frames(base_img, paths, theme_key, duration=4.0, fps=10):
+    theme = THEMES[theme_key]
+    total_frames = int(duration * fps)
+    frames = []
+    for f_idx in range(total_frames):
+        curr_time = f_idx / fps
+        frame = base_img.copy()
+        draw = ImageDraw.Draw(frame)
+        for path in paths:
+            pts = path["pts"]
+            period = path.get("period", 2.0)
+            t = (curr_time / period) % 1.0
+            pos = interpolate_path(pts, t)
+            t_tail = ((curr_time - 0.08) / period) % 1.0
+            pos_tail = interpolate_path(pts, t_tail)
+            draw.ellipse([pos_tail[0]-2.5, pos_tail[1]-2.5, pos_tail[0]+2.5, pos_tail[1]+2.5], fill=theme["particle_glow"])
+            draw_popping_particle(draw, pos, theme, r_glow=7, r_core=3)
+        frames.append(frame.convert("RGB"))
     return frames
 
 # ==============================================================================
@@ -988,72 +1009,78 @@ def find_ffmpeg():
 
     return None
 
-def export_pure_gif(frames, output_gif, fps=12):
+def export_pure_gif_from_dir(temp_dir: Path, output_gif: str, fps=10):
     ffmpeg_exe = find_ffmpeg()
 
     if ffmpeg_exe:
-        import tempfile
-        import shutil
-        temp_dir_str = tempfile.mkdtemp(prefix="linkedin_gif_")
-        temp_dir = Path(temp_dir_str)
+        palette_file = temp_dir / "palette.png"
+        logger.info(f"Rendering high-fidelity GIF via FFmpeg 2-pass palettegen ({ffmpeg_exe})...")
+
+        # Pass 1: Generate high-definition 256-color palette with moving diff priority
+        cmd_pal = [
+            ffmpeg_exe, "-y",
+            "-framerate", str(fps),
+            "-i", str(temp_dir / "frame_%04d.png"),
+            "-vf", "palettegen=max_colors=256:stats_mode=diff:reserve_transparent=0",
+            str(palette_file)
+        ]
+        subprocess.run(cmd_pal, capture_output=True, check=True)
+
+        # Pass 2: Apply optimal palette with smooth antialiased Bayer dithering
+        cmd_gif = [
+            ffmpeg_exe, "-y",
+            "-framerate", str(fps),
+            "-i", str(temp_dir / "frame_%04d.png"),
+            "-i", str(palette_file),
+            "-lavfi", "paletteuse=dither=bayer:bayer_scale=3:diff_mode=rectangle",
+            "-loop", "0",
+            output_gif
+        ]
+        subprocess.run(cmd_gif, capture_output=True, check=True)
+        logger.info(f"Successfully generated pure 2-pass FFmpeg GIF at: {output_gif}")
+
+        # Also generate high-definition MP4
+        mp4_path = str(Path(output_gif).with_suffix(".mp4"))
         try:
-            logger.info(f"Rendering high-fidelity GIF via FFmpeg 2-pass palettegen ({ffmpeg_exe})...")
-            for i, f in enumerate(frames):
-                f.save(temp_dir / f"frame_{i:04d}.png")
-
-            palette_file = temp_dir / "palette.png"
-
-            # Pass 1: Generate high-definition 256-color palette with moving diff priority
-            cmd_pal = [
+            cmd_mp4 = [
                 ffmpeg_exe, "-y",
                 "-framerate", str(fps),
                 "-i", str(temp_dir / "frame_%04d.png"),
-                "-vf", "palettegen=max_colors=256:stats_mode=diff:reserve_transparent=0",
-                str(palette_file)
+                "-c:v", "libx264", "-pix_fmt", "yuv420p",
+                "-crf", "18", "-preset", "fast",
+                mp4_path
             ]
-            subprocess.run(cmd_pal, capture_output=True, check=True)
-
-            # Pass 2: Apply optimal palette with smooth antialiased Bayer dithering
-            cmd_gif = [
-                ffmpeg_exe, "-y",
-                "-framerate", str(fps),
-                "-i", str(temp_dir / "frame_%04d.png"),
-                "-i", str(palette_file),
-                "-lavfi", "paletteuse=dither=bayer:bayer_scale=3:diff_mode=rectangle",
-                "-loop", "0",
-                output_gif
-            ]
-            subprocess.run(cmd_gif, capture_output=True, check=True)
-            logger.info(f"Successfully generated pure 2-pass FFmpeg GIF at: {output_gif}")
-
-            # Also generate high-definition 1080p MP4 (TrueColor 16.7M colors, zero banding)
-            mp4_path = str(Path(output_gif).with_suffix(".mp4"))
-            try:
-                cmd_mp4 = [
-                    ffmpeg_exe, "-y",
-                    "-framerate", str(fps),
-                    "-i", str(temp_dir / "frame_%04d.png"),
-                    "-c:v", "libx264", "-pix_fmt", "yuv420p",
-                    "-crf", "17", "-preset", "fast",
-                    mp4_path
-                ]
-                subprocess.run(cmd_mp4, capture_output=True, check=True)
-                logger.info(f"Successfully generated 1080p MP4 video at: {mp4_path}")
-            except Exception as e_mp4:
-                logger.warning(f"Notice: MP4 generation skipped ({e_mp4})")
-        finally:
-            shutil.rmtree(temp_dir_str, ignore_errors=True)
+            subprocess.run(cmd_mp4, capture_output=True, check=True)
+            logger.info(f"Successfully generated MP4 video at: {mp4_path}")
+        except Exception as e_mp4:
+            logger.warning(f"Notice: MP4 generation skipped ({e_mp4})")
     else:
         logger.warning("FFmpeg not found; falling back to Pillow GIF encoder.")
+        from PIL import Image
+        frame_files = sorted(temp_dir.glob("frame_*.png"))
+        first_frame = Image.open(frame_files[0])
+        other_frames = [Image.open(f) for f in frame_files[1:]]
         duration_ms = int(1000 / fps)
-        frames[0].save(
+        first_frame.save(
             output_gif,
             save_all=True,
-            append_images=frames[1:],
+            append_images=other_frames,
             duration=duration_ms,
             loop=0,
             optimize=True
         )
+
+def export_pure_gif(frames, output_gif, fps=10):
+    import tempfile
+    import shutil
+    temp_dir_str = tempfile.mkdtemp(prefix="buxbi_exp_")
+    temp_dir = Path(temp_dir_str)
+    try:
+        for i, f in enumerate(frames):
+            f.save(temp_dir / f"frame_{i:04d}.png")
+        export_pure_gif_from_dir(temp_dir, output_gif, fps=fps)
+    finally:
+        shutil.rmtree(temp_dir_str, ignore_errors=True)
 
 # ==============================================================================
 # 8. DEFAULT CONTENT (NO TAKEAWAY)
@@ -1399,7 +1426,6 @@ Multi-Agent Orchestration
 
         width, height = resolve_canvas_size(size, content)
         base_img, paths = render_base_diagram(width, height, content, theme_key, font_family="modern")
-        frames = render_animated_frames(base_img, paths, theme_key, duration=duration, fps=fps)
 
         if not output_path:
             out_dir = Path("data/generated_gifs")
@@ -1409,7 +1435,22 @@ Multi-Agent Orchestration
         if not output_path.lower().endswith(".gif"):
             output_path += ".gif"
 
-        export_pure_gif(frames, output_path, fps=fps)
+        import tempfile
+        import shutil
+        import gc
+
+        temp_dir_str = tempfile.mkdtemp(prefix="buxbi_render_")
+        temp_dir = Path(temp_dir_str)
+        try:
+            render_frames_to_disk(base_img, paths, theme_key, temp_dir, duration=duration, fps=fps)
+            del base_img
+            gc.collect()
+
+            export_pure_gif_from_dir(temp_dir, output_path, fps=fps)
+        finally:
+            shutil.rmtree(temp_dir_str, ignore_errors=True)
+            gc.collect()
+
         return output_path
 
 gif_engine = LinkedInGifEngine()
