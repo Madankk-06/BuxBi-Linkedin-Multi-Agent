@@ -346,8 +346,23 @@ class AgentOrchestrator:
         """Handle button clicks from Telegram."""
         parts = callback_data.split(":")
         action = parts[0]
-        sub_param = parts[1] if len(parts) >= 3 else None
-        post_id_str = parts[2] if len(parts) >= 3 else (parts[1] if len(parts) >= 2 else "0")
+        if len(parts) >= 4:
+            sub_param = parts[1]
+            sub_param2 = parts[2]
+            post_id_str = parts[3]
+        elif len(parts) == 3:
+            sub_param = parts[1]
+            sub_param2 = None
+            post_id_str = parts[2]
+        elif len(parts) == 2:
+            sub_param = None
+            sub_param2 = None
+            post_id_str = parts[1]
+        else:
+            sub_param = None
+            sub_param2 = None
+            post_id_str = "0"
+
         try:
             post_id = int(post_id_str)
         except ValueError:
@@ -385,8 +400,91 @@ class AgentOrchestrator:
 
         # --- GIF CUSTOMIZATION ACTIONS ---
         if action == "edit_gif":
-            telegram_bot.send_gif_customization_menu(post_id=post_id, chat_id=chat_id)
+            telegram_bot.send_gif_customization_menu(post_id=post_id, current_theme="5", current_size="poster", chat_id=chat_id)
             telegram_bot.edit_message_reply_markup(chat_id, message_id)
+            return
+
+        elif action == "gif_sel_t":
+            sel_theme = sub_param or "5"
+            sel_size = sub_param2 or "poster"
+            telegram_bot.edit_gif_customization_menu(chat_id, message_id, post_id, selected_theme=sel_theme, selected_size=sel_size)
+            return
+
+        elif action == "gif_sel_s":
+            sel_theme = sub_param or "5"
+            sel_size = sub_param2 or "poster"
+            telegram_bot.edit_gif_customization_menu(chat_id, message_id, post_id, selected_theme=sel_theme, selected_size=sel_size)
+            return
+
+        elif action == "gif_go":
+            theme_id = sub_param or "5"
+            size_preset = sub_param2 or "poster"
+            theme_names = {
+                "5": "Champagne & Bronze",
+                "6": "Graphite & Blue",
+                "4": "Royal Amethyst"
+            }
+            size_names = {
+                "poster": "Poster (1400x800)",
+                "landscape": "Landscape (1200x630)",
+                "portrait": "Portrait (1080x1350)",
+                "square": "Square (1080x1080)"
+            }
+            t_display = theme_names.get(theme_id, f"Theme {theme_id}")
+            s_display = size_names.get(size_preset, size_preset.title())
+
+            telegram_bot.send_message(
+                f"⚙️ <b>Re-creating animated GIF...</b>\n\n"
+                f"🎨 <b>Theme:</b> {t_display}\n"
+                f"📐 <b>Resolution:</b> {s_display}\n\n"
+                f"<i>Synthesizing both selections into a master-quality GIF...</i>",
+                chat_id=chat_id
+            )
+
+            spec_file = Path(f"data/generated_gifs/post_{post_id}_spec.txt")
+            if spec_file.exists():
+                with open(spec_file, "r", encoding="utf-8") as f:
+                    spec_text = f.read()
+            else:
+                spec_text = gif_engine.design_architecture_spec(post["topic"], post["draft_text"])
+
+            ts = int(time.time())
+            new_gif_path = f"data/generated_gifs/post_{post_id}_t{theme_id}_{size_preset}_{ts}.gif"
+            gif_engine.render_gif(
+                spec_text,
+                theme=theme_id,
+                size=size_preset,
+                output_path=new_gif_path,
+                fps=10,
+                duration=4.0
+            )
+
+            # 1. Permanently store new pure GIF binary into database blob
+            try:
+                with open(new_gif_path, "rb") as f:
+                    raw_bytes = f.read()
+                db.save_post_media_blob(post_id, raw_bytes, os.path.basename(new_gif_path), "image/gif")
+            except Exception as e:
+                logger.warning(f"Could not save re-created GIF to DB: {e}")
+
+            # 2. Upload to Catbox CDN to get fresh 1-click download link
+            public_url = publora_client.upload_local_media(new_gif_path, post_id=post_id)
+            stored_ref = public_url or new_gif_path
+            db.update_post_image(post_id, stored_ref)
+            post["image_url"] = stored_ref
+
+            # 3. Clean up the customization menu
+            telegram_bot.edit_message_reply_markup(chat_id, message_id)
+
+            # 4. Send updated Post Approval Card with the new GIF download link!
+            telegram_bot.send_post_approval_card(
+                post_id=post_id,
+                topic=post["topic"],
+                hook_formula=post.get("hook_formula", ""),
+                draft_text=post["draft_text"],
+                image_url=new_gif_path,
+                chat_id=chat_id
+            )
             return
 
         elif action == "gif_theme":
