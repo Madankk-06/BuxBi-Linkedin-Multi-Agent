@@ -1,4 +1,5 @@
 import json
+import time
 import logging
 import requests
 from typing import Optional
@@ -30,43 +31,35 @@ class LLMClient:
             raise ValueError("GROQ_API_KEY is not set in .env")
 
         model = config.GROQ_MODEL or "qwen/qwen3.8-27b"
-        try:
-            from groq import Groq
-            client = Groq(api_key=api_key)
-            
-            messages = []
-            if system_prompt:
-                messages.append({"role": "system", "content": system_prompt})
-            messages.append({"role": "user", "content": prompt})
+        # Try primary model then fallback models
+        models_to_try = [model]
+        for fb in ["llama-3.3-70b-versatile", "llama-3.1-8b-instant"]:
+            if fb != model:
+                models_to_try.append(fb)
 
-            chat_completion = client.chat.completions.create(
-                messages=messages,
-                model=model,
-                temperature=temperature,
-                max_tokens=700,
-            )
-            return chat_completion.choices[0].message.content.strip()
-        except Exception as e:
-            logger.error(f"Error calling Groq SDK, trying REST endpoint: {e}")
-            url = "https://api.groq.com/openai/v1/chat/completions"
-            headers = {
-                "Authorization": f"Bearer {api_key}",
-                "Content-Type": "application/json"
-            }
-            messages = []
-            if system_prompt:
-                messages.append({"role": "system", "content": system_prompt})
-            messages.append({"role": "user", "content": prompt})
-            
-            payload = {
-                "model": model,
-                "messages": messages,
-                "temperature": temperature,
-                "max_tokens": 700
-            }
-            resp = requests.post(url, headers=headers, json=payload, timeout=30)
-            resp.raise_for_status()
-            return resp.json()["choices"][0]["message"]["content"].strip()
+        last_err = None
+        for m in models_to_try:
+            try:
+                from groq import Groq
+                client = Groq(api_key=api_key)
+                messages = []
+                if system_prompt:
+                    messages.append({"role": "system", "content": system_prompt})
+                messages.append({"role": "user", "content": prompt})
+
+                chat_completion = client.chat.completions.create(
+                    messages=messages,
+                    model=m,
+                    temperature=temperature,
+                    max_tokens=700,
+                )
+                return chat_completion.choices[0].message.content.strip()
+            except Exception as e:
+                last_err = e
+                logger.warning(f"Groq model {m} failed ({e}), trying fallback...")
+                time.sleep(1)
+
+        raise RuntimeError(f"All Groq models failed. Last error: {last_err}")
 
     def _call_gemini(self, prompt: str, system_prompt: Optional[str], temperature: float) -> str:
         """Call Google Gemini using raw REST API."""
