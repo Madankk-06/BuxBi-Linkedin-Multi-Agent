@@ -57,13 +57,16 @@ class PubloraClient:
             return None
 
         # Tier 1: Catbox (permanent, global CDN, perfect for LinkedIn and browsers)
+        filename = os.path.basename(local_path)
+        mime_type = "image/gif" if filename.lower().endswith(".gif") else "image/jpeg"
+
         for attempt in range(2):
             try:
                 with open(local_path, "rb") as f:
                     resp = requests.post(
                         "https://catbox.moe/user/api.php",
                         data={"reqtype": "fileupload"},
-                        files={"fileToUpload": f},
+                        files={"fileToUpload": (filename, f, mime_type)},
                         timeout=35
                     )
                     if resp.status_code == 200 and resp.text.strip().startswith("http"):
@@ -80,7 +83,7 @@ class PubloraClient:
                 resp = requests.post(
                     "https://litterbox.catbox.moe/resources/internals/api.php",
                     data={"reqtype": "fileupload", "time": "72h"},
-                    files={"fileToUpload": f},
+                    files={"fileToUpload": (filename, f, mime_type)},
                     timeout=30
                 )
                 if resp.status_code == 200 and resp.text.strip().startswith("http"):

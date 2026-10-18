@@ -237,16 +237,81 @@ class AgentOrchestrator:
         t = threading.Thread(target=_poll, daemon=True)
         t.start()
 
+    def _resolve_gif_media_for_publishing(self, post: dict) -> Optional[str]:
+        """Guarantee that LinkedIn strictly receives a genuine, pristine GIF image, never an MP4 video."""
+        post_id = post["id"]
+        raw_media = post.get("image_url")
+        master_gif = f"data/generated_gifs/post_{post_id}_arch.gif"
+
+        # If no media attached, use the generated master architectural GIF if it exists
+        if not raw_media:
+            return master_gif if os.path.exists(master_gif) else None
+
+        media_str = str(raw_media).strip()
+
+        # If local file
+        if not (media_str.startswith("http://") or media_str.startswith("https://")):
+            local_path = media_str
+            if local_path.endswith(".mp4"):
+                gif_sib = str(Path(local_path).with_suffix(".gif"))
+                if os.path.exists(gif_sib):
+                    local_path = gif_sib
+                elif os.path.exists(master_gif):
+                    local_path = master_gif
+
+            if os.path.exists(local_path):
+                try:
+                    with open(local_path, "rb") as f:
+                        hdr = f.read(16)
+                    if hdr.startswith(b"GIF87a") or hdr.startswith(b"GIF89a"):
+                        return local_path
+
+                    # If file has MP4 / ISOM bytes, prefer master 2800x1600 GIF if available
+                    if b"ftyp" in hdr or hdr.startswith(b"\x00\x00\x00"):
+                        if os.path.exists(master_gif):
+                            logger.info(f"Using pristine Master 2800x1600 GIF {master_gif} instead of MP4 file {local_path}")
+                            return master_gif
+
+                        # Convert with FFmpeg to real CompuServe GIF89a
+                        from lib.gif_engine import find_ffmpeg
+                        ffmpeg_exe = find_ffmpeg()
+                        if ffmpeg_exe:
+                            conv = str(Path(local_path).with_suffix(".pure.gif"))
+                            cmd = [
+                                ffmpeg_exe, "-y",
+                                "-i", local_path,
+                                "-vf", "fps=10,split[s0][s1];[s0]palettegen=max_colors=256:stats_mode=diff[p];[s1][p]paletteuse=dither=bayer:bayer_scale=3",
+                                conv
+                            ]
+                            subprocess.run(cmd, capture_output=True, check=True)
+                            return conv
+                except Exception as e:
+                    logger.warning(f"Error inspecting media bytes: {e}")
+
+            if os.path.exists(master_gif):
+                return master_gif
+            return local_path
+
+        # If remote URL ending in .mp4, prefer local master GIF if available
+        if media_str.endswith(".mp4") and os.path.exists(master_gif):
+            return master_gif
+
+        return media_str
+
     def _publish_post_now(self, post: dict, chat_id: str) -> bool:
         """Publish a post immediately via Publora (schedules 60s out in UTC ISO-8601 and verifies live status)."""
         post_id = post["id"]
         db.update_post_status(post_id, "approved")
 
         if publora_client.is_configured:
+            # Guarantee that LinkedIn always receives the pure GIF image, never an MP4 video
+            media_to_publish = self._resolve_gif_media_for_publishing(post)
+            logger.info(f"Selected media for LinkedIn publishing: {media_to_publish}")
+
             res = publora_client.publish_or_schedule_post(
                 post["draft_text"],
                 scheduled_time=None,
-                image_path=post.get("image_url")
+                image_path=media_to_publish
             )
             if res.get("success"):
                 publora_id = res.get("post_id", "")
@@ -422,10 +487,11 @@ class AgentOrchestrator:
 
         elif action == "schedule_slot":
             if publora_client.is_configured:
+                media_to_publish = self._resolve_gif_media_for_publishing(post)
                 res = publora_client.publish_or_schedule_post(
                     post["draft_text"],
                     scheduled_time="08:30",
-                    image_path=post.get("image_url")
+                    image_path=media_to_publish
                 )
                 if res.get("success"):
                     publora_id = res.get("post_id", "")
@@ -509,28 +575,75 @@ class AgentOrchestrator:
         dest_path = f"data/user_uploads/post_{post_id}_{int(time.time())}{ext}"
         downloaded = telegram_bot.download_file(file_id, dest_path)
         if downloaded:
-            # 1. Permanently store the uploaded media binary into MySQL/SQLite DB
+            # 1. Inspect actual binary magic bytes
+            is_pure_gif = False
+            is_mp4 = False
             try:
-                with open(downloaded, "rb") as f:
+                with open(downloaded, "rb") as f_check:
+                    hdr = f_check.read(16)
+                if hdr.startswith(b"GIF87a") or hdr.startswith(b"GIF89a"):
+                    is_pure_gif = True
+                elif b"ftyp" in hdr or hdr.startswith(b"\x00\x00\x00") or ext == ".mp4" or media_kind in ("animation", "video"):
+                    is_mp4 = True
+            except Exception:
+                pass
+
+            gif_target_path = downloaded
+            master_gif = f"data/generated_gifs/post_{post_id}_arch.gif"
+
+            if is_mp4 or (not is_pure_gif and ext == ".gif"):
+                from lib.gif_engine import find_ffmpeg
+                ffmpeg_exe = find_ffmpeg()
+                converted_gif = str(Path(downloaded).with_name(f"post_{post_id}_{int(time.time())}_pure.gif"))
+                if ffmpeg_exe:
+                    try:
+                        logger.info(f"Converting Telegram MP4/video {downloaded} to high-fidelity GIF {converted_gif}...")
+                        cmd_conv = [
+                            ffmpeg_exe, "-y",
+                            "-i", downloaded,
+                            "-vf", "fps=10,split[s0][s1];[s0]palettegen=max_colors=256:stats_mode=diff[p];[s1][p]paletteuse=dither=bayer:bayer_scale=3",
+                            converted_gif
+                        ]
+                        subprocess.run(cmd_conv, capture_output=True, check=True)
+                        gif_target_path = converted_gif
+                        logger.info(f"Successfully converted MP4 to pure GIF: {gif_target_path}")
+                    except Exception as e_conv:
+                        logger.warning(f"Notice: MP4 to GIF conversion failed, keeping original ({e_conv})")
+                        if os.path.exists(master_gif):
+                            gif_target_path = master_gif
+
+            # If user sent back an unedited/downscaled version of the generated post GIF (Telegram downscales animations to 320px)
+            # but we have the master 2800x1600 GIF on disk, retain the master 2800x1600 GIF for crisp quality!
+            if os.path.exists(master_gif) and os.path.exists(gif_target_path):
+                try:
+                    if os.path.getsize(gif_target_path) < 150_000 and os.path.getsize(master_gif) > 300_000:
+                        logger.info(f"Detected low-res Telegram delivery ({os.path.getsize(gif_target_path)} bytes). Retaining Master 2800x1600 GIF ({os.path.getsize(master_gif)} bytes).")
+                        gif_target_path = master_gif
+                except Exception:
+                    pass
+
+            # 2. Permanently store the pure GIF binary into MySQL/SQLite DB
+            try:
+                with open(gif_target_path, "rb") as f:
                     media_bytes = f.read()
-                db.save_post_media_blob(post_id, media_bytes, os.path.basename(downloaded), mime or "image/gif")
+                db.save_post_media_blob(post_id, media_bytes, os.path.basename(gif_target_path), "image/gif")
             except Exception as e:
                 logger.warning(f"Could not save user upload blob to DB: {e}")
 
-            # 2. Upload to public HTTPS host (Catbox CDN or Render DB fallback)
-            public_url = publora_client.upload_local_media(downloaded, post_id=post_id)
-            stored_image_ref = public_url or downloaded
+            # 3. Upload pure GIF to public HTTPS host (Catbox CDN or Render DB fallback)
+            public_url = publora_client.upload_local_media(gif_target_path, post_id=post_id)
+            stored_image_ref = public_url or gif_target_path
             db.update_post_image(post_id, stored_image_ref)
             self.pending_image_upload_post_id = None
             telegram_bot.send_final_confirmation_card(
                 post_id=post_id,
                 topic=target_post["topic"],
                 draft_text=target_post["draft_text"],
-                image_url=downloaded,
+                image_url=gif_target_path,
                 chat_id=chat_id,
                 public_media_url=public_url,
                 telegram_file_id=file_id,
-                media_kind=media_kind
+                media_kind="document"
             )
         else:
             telegram_bot.send_message("⚠️ Could not download the media. Please try sending it again.", chat_id=chat_id)
