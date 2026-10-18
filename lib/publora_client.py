@@ -51,26 +51,28 @@ class PubloraClient:
         # Already ISO-8601
         return scheduled_time
 
-    def upload_local_media(self, local_path: str) -> Optional[str]:
-        """Upload a local image file to a fast HTTPS host so Publora can ingest it via mediaUrls."""
+    def upload_local_media(self, local_path: str, post_id: Optional[int] = None) -> Optional[str]:
+        """Upload a local image file to a fast HTTPS host so Publora/LinkedIn can ingest it via mediaUrls."""
         if not os.path.exists(local_path):
             return None
 
-        # Tier 1: Catbox
-        try:
-            with open(local_path, "rb") as f:
-                resp = requests.post(
-                    "https://catbox.moe/user/api.php",
-                    data={"reqtype": "fileupload"},
-                    files={"fileToUpload": f},
-                    timeout=25
-                )
-                if resp.status_code == 200 and resp.text.strip().startswith("http"):
-                    public_url = resp.text.strip()
-                    logger.info(f"Uploaded local media to Catbox: {public_url}")
-                    return public_url
-        except Exception as e:
-            logger.warning(f"Catbox upload failed: {e}")
+        # Tier 1: Catbox (permanent, global CDN, perfect for LinkedIn and browsers)
+        for attempt in range(2):
+            try:
+                with open(local_path, "rb") as f:
+                    resp = requests.post(
+                        "https://catbox.moe/user/api.php",
+                        data={"reqtype": "fileupload"},
+                        files={"fileToUpload": f},
+                        timeout=35
+                    )
+                    if resp.status_code == 200 and resp.text.strip().startswith("http"):
+                        public_url = resp.text.strip()
+                        logger.info(f"Uploaded local media to Catbox: {public_url}")
+                        return public_url
+            except Exception as e:
+                logger.warning(f"Catbox upload attempt {attempt+1} failed: {e}")
+                time.sleep(1)
 
         # Tier 2: Litterbox (72h temporary HTTPS host)
         try:
@@ -79,7 +81,7 @@ class PubloraClient:
                     "https://litterbox.catbox.moe/resources/internals/api.php",
                     data={"reqtype": "fileupload", "time": "72h"},
                     files={"fileToUpload": f},
-                    timeout=25
+                    timeout=30
                 )
                 if resp.status_code == 200 and resp.text.strip().startswith("http"):
                     public_url = resp.text.strip()
@@ -88,10 +90,13 @@ class PubloraClient:
         except Exception as e:
             logger.warning(f"Litterbox upload failed: {e}")
 
-        # Tier 3: First-party Render HTTPS server fallback
+        # Tier 3: First-party database raw link or media fallback
         render_url = os.getenv("RENDER_EXTERNAL_URL", "https://buxbi.onrender.com").rstrip("/")
-        filename = os.path.basename(local_path)
-        fallback_url = f"{render_url}/media/{filename}"
+        if post_id:
+            fallback_url = f"{render_url}/dl/raw/{post_id}"
+        else:
+            filename = os.path.basename(local_path)
+            fallback_url = f"{render_url}/media/{filename}"
         logger.info(f"Using first-party media URL fallback: {fallback_url}")
         return fallback_url
 

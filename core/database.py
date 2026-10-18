@@ -138,6 +138,20 @@ class Database:
                         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
                     """)
                     logger.info("MySQL database initialized successfully.")
+
+                # Ensure media blob columns exist to permanently lock quality in database
+                cols_to_add = [
+                    ("media_bytes", "BLOB" if self.is_sqlite else "LONGBLOB"),
+                    ("media_filename", "TEXT" if self.is_sqlite else "VARCHAR(255)"),
+                    ("media_mime", "TEXT" if self.is_sqlite else "VARCHAR(100)")
+                ]
+                for col_name, col_type in cols_to_add:
+                    try:
+                        cursor.execute(f"ALTER TABLE posts ADD COLUMN {col_name} {col_type}")
+                    except Exception:
+                        pass
+                if self.is_sqlite:
+                    conn.commit()
         except Exception as e:
             logger.error(f"Failed to initialize database tables: {e}")
             raise
@@ -205,6 +219,38 @@ class Database:
             cursor.execute(query, (image_url, post_id))
             if self.is_sqlite:
                 conn.commit()
+
+    def save_post_media_blob(self, post_id: int, data: bytes, filename: str, mime_type: str = "image/gif"):
+        """Save raw binary media into the database to permanently lock quality and survive server restarts."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            query = self._prep_query("""
+                UPDATE posts 
+                SET media_bytes = %s, media_filename = %s, media_mime = %s 
+                WHERE id = %s
+            """)
+            cursor.execute(query, (data, filename, mime_type, post_id))
+            if self.is_sqlite:
+                conn.commit()
+            logger.info(f"Saved {len(data)} bytes of {mime_type} into DB for Post #{post_id}")
+
+    def get_post_media_blob(self, post_id: int) -> Optional[dict]:
+        """Retrieve raw binary media for a post directly from the database."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            query = self._prep_query("""
+                SELECT media_bytes, media_filename, media_mime 
+                FROM posts 
+                WHERE id = %s
+            """)
+            cursor.execute(query, (post_id,))
+            row = cursor.fetchone()
+            if not row:
+                return None
+            res = dict(row) if self.is_sqlite else row
+            if not res.get("media_bytes"):
+                return None
+            return res
 
     # --- Connection Operations ---
     def save_connection_lead(self, person_name: str, title: str, company: str, 

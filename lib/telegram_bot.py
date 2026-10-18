@@ -5,6 +5,7 @@ import requests
 from typing import Optional
 from pathlib import Path
 from core.config import config
+from core.database import db
 
 logger = logging.getLogger(__name__)
 
@@ -248,12 +249,32 @@ class TelegramBot:
         escaped_draft = _esc(draft_text)
 
         download_url = None
-        if image_url:
+        if image_url and os.path.exists(image_url):
             filename = os.path.basename(image_url)
             mp4_path = str(Path(image_url).with_suffix(".mp4"))
 
+            # 1. Permanently lock uncompressed raw GIF bytes into MySQL/SQLite DB to survive restarts
+            try:
+                with open(image_url, "rb") as f:
+                    raw_bytes = f.read()
+                db.save_post_media_blob(post_id, raw_bytes, filename, "image/gif")
+            except Exception as e:
+                logger.warning(f"Could not store media blob in DB: {e}")
+
+            # 2. Upload to Catbox high-speed global CDN
+            public_cdn_url = None
+            try:
+                from lib.publora_client import publora_client
+                public_cdn_url = publora_client.upload_local_media(image_url, post_id=post_id)
+            except Exception as e:
+                logger.warning(f"Public CDN upload error: {e}")
+
+            render_base = os.getenv("RENDER_EXTERNAL_URL", "https://buxbi.onrender.com").rstrip("/")
+            db_direct_url = f"{render_base}/dl/raw/{post_id}"
+            download_url = public_cdn_url if (public_cdn_url and not public_cdn_url.startswith(f"{render_base}/media/")) else db_direct_url
+
+            # 3. Send 1080p High-Definition MP4 Video for smooth in-app preview
             if os.path.exists(mp4_path):
-                # 1. Send 1080p High-Definition MP4 Video (TrueColor 16.7M colors, crystal-sharp typography)
                 self.send_video(
                     mp4_path,
                     caption=(
@@ -276,34 +297,30 @@ class TelegramBot:
                     chat_id=chat_id
                 )
 
-            # 2. Deliver the uncompressed raw master document with direct web download link
-            doc_resp = self.send_document(
-                image_url,
-                caption=(
-                    f"📁 <b>Master High-Resolution GIF (Raw Uncompressed)</b>\n"
-                    f"📌 Post #{post_id} | 2800x1600 Retina Architecture Poster\n"
-                    f"👉 Download from Telegram file above or use the web link below."
-                ),
-                chat_id=chat_id
-            )
-
-            file_id = None
-            if isinstance(doc_resp, dict) and doc_resp.get("ok"):
-                file_id = doc_resp.get("result", {}).get("document", {}).get("file_id")
-
-            render_base = os.getenv("RENDER_EXTERNAL_URL", "https://buxbi.onrender.com").rstrip("/")
-            if file_id:
-                # Durable link proxying Telegram's CDN via Render (works even after Render restart/redeploy)
-                download_url = f"{render_base}/dl/{file_id}/{filename}"
-            else:
-                download_url = f"{render_base}/media/gifs/{filename}"
+            # 4. Deliver uncompressed master ZIP to bypass Telegram's GIF-transcoding engine
+            try:
+                import zipfile
+                zip_path = os.path.join(os.path.dirname(image_url), f"post_{post_id}_retina_master.zip")
+                with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+                    zf.write(image_url, arcname=filename)
+                self.send_document(
+                    zip_path,
+                    caption=(
+                        f"📦 <b>Master 2800x1600 Retina GIF (Pure Lossless Archive)</b>\n"
+                        f"📌 Post #{post_id} | Uncompressed, un-transcoded master file\n"
+                        f"👉 Tap to download in Telegram or use the 1-click web link below."
+                    ),
+                    chat_id=chat_id
+                )
+            except Exception as e:
+                logger.warning(f"Could not send master ZIP document: {e}")
 
         char_count = len(draft_text)
         dl_section = ""
         if download_url:
             dl_section = (
-                f"\n📥 <b>Master High-Resolution GIF:</b>\n"
-                f"🔗 <a href=\"{download_url}\">Click here to Download Master GIF</a>\n"
+                f"\n📥 <b>Master High-Resolution GIF (Direct Web Download):</b>\n"
+                f"🔗 <a href=\"{download_url}\">Click here to Download Master 2800x1600 GIF</a>\n"
                 f"<i>💡 Download to review or edit, then send it back to BuxBi right here in chat to combine with this post!</i>\n"
             )
         
@@ -327,7 +344,7 @@ class TelegramBot:
         ]
         if download_url:
             inline_keyboard_rows.append([
-                {"text": "📥 Download Master GIF (Web Link)", "url": download_url}
+                {"text": "📥 Download Master GIF (1-Click)", "url": download_url}
             ])
         inline_keyboard_rows.extend([
             [
@@ -440,7 +457,7 @@ class TelegramBot:
         else:
             self.send_photo(image_url, caption=caption, chat_id=chat_id)
 
-        media_line = f"\n🌐 <b>Public Media URL:</b> <a href=\"{public_media_url}\">View Online</a>\n" if public_media_url else ""
+        media_line = f"\n🌐 <b>Attached Graphic:</b> <a href=\"{public_media_url}\">View Full Quality</a>\n" if (public_media_url and not public_media_url.startswith("https://buxbi.onrender.com/media/")) else ""
         message_html = (
             f"<b>📋 Final Combined Post for Post #{post_id}</b>\n\n"
             f"{escaped_draft}\n"

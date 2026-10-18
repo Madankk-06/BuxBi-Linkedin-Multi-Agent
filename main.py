@@ -5,6 +5,7 @@ from datetime import datetime
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 
+import re
 import os
 import threading
 from http.server import HTTPServer, ThreadingHTTPServer, BaseHTTPRequestHandler
@@ -72,11 +73,38 @@ class HealthHandler(BaseHTTPRequestHandler):
             self.send_response(500)
             self.end_headers()
 
+    def do_HEAD(self):
+        self.do_GET()
+
     def do_GET(self):
+        # 1. Database raw binary media endpoint (100% persistent across server restarts/deploys)
+        if self.path.startswith("/dl/raw/") or self.path.startswith("/raw/"):
+            parts = [p for p in self.path.split("?")[0].split("/") if p and p not in ("dl", "raw")]
+            if parts and parts[0].isdigit():
+                post_id = int(parts[0])
+                blob_info = db.get_post_media_blob(post_id)
+                if blob_info and blob_info.get("media_bytes"):
+                    data = blob_info["media_bytes"]
+                    filename = blob_info.get("media_filename") or f"post_{post_id}_master.gif"
+                    mime = blob_info.get("media_mime") or "image/gif"
+                    self.send_response(200)
+                    self.send_header("Content-Type", mime)
+                    self.send_header("Content-Length", str(len(data)))
+                    self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
+                    self.send_header("Cache-Control", "public, max-age=86400")
+                    self.end_headers()
+                    self.wfile.write(data)
+                    return
+            self.send_response(404)
+            self.end_headers()
+            return
+
+        # 2. Telegram CDN file proxy endpoint
         if self.path.startswith("/dl/"):
             self._serve_telegram_file()
             return
 
+        # 3. Local media files with database fallback
         if self.path.startswith("/media/"):
             rel_path = self.path.split("?", 1)[0][len("/media/"):]
             if rel_path.startswith("gifs/"):
@@ -91,18 +119,35 @@ class HealthHandler(BaseHTTPRequestHandler):
             if os.path.exists(filepath) and os.path.isfile(filepath):
                 ext = filename.lower().rsplit(".", 1)[-1] if "." in filename else "jpg"
                 self.send_response(200)
-                self.send_header("Content-type", self.MIME_MAP.get(ext, "application/octet-stream"))
+                self.send_header("Content-Type", self.MIME_MAP.get(ext, "application/octet-stream"))
                 self.send_header("Content-Disposition", f'inline; filename="{filename}"')
                 self.end_headers()
                 with open(filepath, "rb") as f:
                     self.wfile.write(f.read())
                 return
+
+            # Database fallback: If file is not on Render's ephemeral disk, pull pure bytes from DB!
+            m = re.search(r"post_(\d+)", filename)
+            if m:
+                blob_info = db.get_post_media_blob(int(m.group(1)))
+                if blob_info and blob_info.get("media_bytes"):
+                    data = blob_info["media_bytes"]
+                    mime = blob_info.get("media_mime") or "image/gif"
+                    self.send_response(200)
+                    self.send_header("Content-Type", mime)
+                    self.send_header("Content-Length", str(len(data)))
+                    self.send_header("Content-Disposition", f'inline; filename="{filename}"')
+                    self.send_header("Cache-Control", "public, max-age=86400")
+                    self.end_headers()
+                    self.wfile.write(data)
+                    return
+
             self.send_response(404)
             self.end_headers()
             return
 
         self.send_response(200)
-        self.send_header("Content-type", "application/json")
+        self.send_header("Content-Type", "application/json")
         self.end_headers()
         self.wfile.write(b'{"status":"healthy","agent":"Buxbi","uptime":"24/7"}')
 

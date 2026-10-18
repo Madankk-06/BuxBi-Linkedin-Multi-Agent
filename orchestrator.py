@@ -508,10 +508,17 @@ class AgentOrchestrator:
         Path("data/user_uploads").mkdir(parents=True, exist_ok=True)
         dest_path = f"data/user_uploads/post_{post_id}_{int(time.time())}{ext}"
         downloaded = telegram_bot.download_file(file_id, dest_path)
-
         if downloaded:
-            # Upload to a public HTTPS host so Publora/LinkedIn can ingest it
-            public_url = publora_client.upload_local_media(downloaded)
+            # 1. Permanently store the uploaded media binary into MySQL/SQLite DB
+            try:
+                with open(downloaded, "rb") as f:
+                    media_bytes = f.read()
+                db.save_post_media_blob(post_id, media_bytes, os.path.basename(downloaded), mime or "image/gif")
+            except Exception as e:
+                logger.warning(f"Could not save user upload blob to DB: {e}")
+
+            # 2. Upload to public HTTPS host (Catbox CDN or Render DB fallback)
+            public_url = publora_client.upload_local_media(downloaded, post_id=post_id)
             stored_image_ref = public_url or downloaded
             db.update_post_image(post_id, stored_image_ref)
             self.pending_image_upload_post_id = None
