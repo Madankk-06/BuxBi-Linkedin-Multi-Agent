@@ -58,7 +58,15 @@ class PubloraClient:
 
         # Tier 1: Catbox (permanent, global CDN, perfect for LinkedIn and browsers)
         filename = os.path.basename(local_path)
-        mime_type = "image/gif" if filename.lower().endswith(".gif") else "image/jpeg"
+        ext = os.path.splitext(filename)[1].lower()
+        mime_map = {
+            ".gif": "image/gif",
+            ".png": "image/png",
+            ".jpg": "image/jpeg",
+            ".jpeg": "image/jpeg",
+            ".webp": "image/webp"
+        }
+        mime_type = mime_map.get(ext, "application/octet-stream")
 
         for attempt in range(2):
             try:

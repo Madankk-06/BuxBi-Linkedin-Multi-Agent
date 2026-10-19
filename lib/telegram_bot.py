@@ -441,15 +441,21 @@ class TelegramBot:
         )
 
         ext = os.path.splitext(image_url)[1].lower()
-        if ext == ".gif":
-            # Always send uncompressed document to avoid Telegram blur & MP4 transcoding
-            self.send_document(image_url, caption=caption, chat_id=chat_id)
-        elif ext in (".mp4", ".mov") or media_kind in ("animation", "video"):
-            self.send_document(image_url, caption=caption, chat_id=chat_id)
-        else:
-            self.send_photo(image_url, caption=caption, chat_id=chat_id)
+        is_photo = ext in (".jpg", ".jpeg", ".png", ".webp") or media_kind == "photo"
 
-        media_line = f"\n🌐 <b>Attached GIF Image:</b> <a href=\"{public_media_url}\">View/Download High-Res Master</a>\n" if (public_media_url and not public_media_url.startswith("https://buxbi.onrender.com/media/")) else ""
+        if is_photo:
+            # Send photo preview directly so user sees their connected image clearly in Telegram
+            self.send_photo(image_url, caption=caption, chat_id=chat_id)
+            label = "Attached Custom Photo"
+        elif ext == ".gif":
+            # Send uncompressed document to avoid Telegram blur & MP4 transcoding
+            self.send_document(image_url, caption=caption, chat_id=chat_id)
+            label = "Attached Master GIF"
+        else:
+            self.send_document(image_url, caption=caption, chat_id=chat_id)
+            label = "Attached Media"
+
+        media_line = f"\n🌐 <b>{label}:</b> <a href=\"{public_media_url}\">View Full Resolution</a>\n" if (public_media_url and not public_media_url.startswith("https://buxbi.onrender.com/media/")) else ""
         message_html = (
             f"<b>📋 Final Combined Post for Post #{post_id}</b>\n\n"
             f"{escaped_draft}\n"

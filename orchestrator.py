@@ -24,6 +24,7 @@ logger = logging.getLogger(__name__)
 class AgentOrchestrator:
     def __init__(self):
         self.pending_image_upload_post_id: Optional[int] = None
+        self._publishing_in_progress: set[int] = set()
 
     def run_morning_content_pipeline(self) -> int:
         """Autonomous pipeline: Select diverse Gen AI domain -> Draft practitioner post -> Humanize -> Render Architectural GIF -> Telegram."""
@@ -237,8 +238,12 @@ class AgentOrchestrator:
         t = threading.Thread(target=_poll, daemon=True)
         t.start()
 
-    def _resolve_gif_media_for_publishing(self, post: dict) -> Optional[str]:
-        """Guarantee that LinkedIn strictly receives a genuine, pristine GIF image, never an MP4 video."""
+    def _resolve_media_for_publishing(self, post: dict) -> Optional[str]:
+        """Resolve the final media path/URL to publish with LinkedIn.
+        - Preserves user-uploaded photos (JPG, PNG, WebP) with 100% fidelity.
+        - Ensures animations/GIFs are sent as pure CompuServe GIF89a images (never MP4 videos).
+        - Falls back to the master generated architectural GIF if no user media is attached.
+        """
         post_id = post["id"]
         raw_media = post.get("image_url")
         master_gif = f"data/generated_gifs/post_{post_id}_arch.gif"
@@ -249,98 +254,131 @@ class AgentOrchestrator:
 
         media_str = str(raw_media).strip()
 
+        # If remote URL
+        if media_str.startswith("http://") or media_str.startswith("https://"):
+            if media_str.lower().endswith(".mp4") and os.path.exists(master_gif):
+                return master_gif
+            return media_str
+
         # If local file
-        if not (media_str.startswith("http://") or media_str.startswith("https://")):
-            local_path = media_str
-            if local_path.endswith(".mp4"):
-                gif_sib = str(Path(local_path).with_suffix(".gif"))
-                if os.path.exists(gif_sib):
-                    local_path = gif_sib
-                elif os.path.exists(master_gif):
-                    local_path = master_gif
-
-            if os.path.exists(local_path):
-                try:
-                    with open(local_path, "rb") as f:
-                        hdr = f.read(16)
-                    if hdr.startswith(b"GIF87a") or hdr.startswith(b"GIF89a"):
-                        return local_path
-
-                    # If file has MP4 / ISOM bytes, prefer master 2800x1600 GIF if available
-                    if b"ftyp" in hdr or hdr.startswith(b"\x00\x00\x00"):
-                        if os.path.exists(master_gif):
-                            logger.info(f"Using pristine Master 2800x1600 GIF {master_gif} instead of MP4 file {local_path}")
-                            return master_gif
-
-                        # Convert with FFmpeg to real CompuServe GIF89a
-                        from lib.gif_engine import find_ffmpeg
-                        ffmpeg_exe = find_ffmpeg()
-                        if ffmpeg_exe:
-                            conv = str(Path(local_path).with_suffix(".pure.gif"))
-                            cmd = [
-                                ffmpeg_exe, "-y",
-                                "-i", local_path,
-                                "-vf", "fps=10,split[s0][s1];[s0]palettegen=max_colors=256:stats_mode=diff[p];[s1][p]paletteuse=dither=bayer:bayer_scale=3",
-                                conv
-                            ]
-                            subprocess.run(cmd, capture_output=True, check=True)
-                            return conv
-                except Exception as e:
-                    logger.warning(f"Error inspecting media bytes: {e}")
-
+        local_path = media_str
+        if not os.path.exists(local_path):
             if os.path.exists(master_gif):
                 return master_gif
             return local_path
 
-        # If remote URL ending in .mp4, prefer local master GIF if available
-        if media_str.endswith(".mp4") and os.path.exists(master_gif):
-            return master_gif
+        try:
+            with open(local_path, "rb") as f:
+                hdr = f.read(16)
 
-        return media_str
+            # 1. Custom user-uploaded photo (JPEG, PNG, WebP) -> PRESERVE!
+            if hdr.startswith(b"\xff\xd8\xff") or hdr.startswith(b"\x89PNG") or hdr.startswith(b"RIFF"):
+                logger.info(f"Preserving custom user-uploaded photo for publishing: {local_path}")
+                return local_path
+
+            # 2. Genuine GIF (GIF87a / GIF89a) -> PRESERVE!
+            if hdr.startswith(b"GIF87a") or hdr.startswith(b"GIF89a"):
+                return local_path
+
+            # 3. MP4 / Video container -> Swap to master GIF or convert
+            if b"ftyp" in hdr or hdr.startswith(b"\x00\x00\x00") or local_path.lower().endswith(".mp4"):
+                if os.path.exists(master_gif):
+                    logger.info(f"Swapping MP4 file {local_path} with pristine Master GIF {master_gif}")
+                    return master_gif
+
+                from lib.gif_engine import find_ffmpeg
+                ffmpeg_exe = find_ffmpeg()
+                if ffmpeg_exe:
+                    conv = str(Path(local_path).with_suffix(".pure.gif"))
+                    cmd = [
+                        ffmpeg_exe, "-y",
+                        "-i", local_path,
+                        "-vf", "fps=10,split[s0][s1];[s0]palettegen=max_colors=256:stats_mode=diff[p];[s1][p]paletteuse=dither=bayer:bayer_scale=3",
+                        conv
+                    ]
+                    subprocess.run(cmd, capture_output=True, check=True)
+                    return conv
+        except Exception as e:
+            logger.warning(f"Error inspecting media bytes for {local_path}: {e}")
+
+        # Check standard image extensions
+        ext = os.path.splitext(local_path)[1].lower()
+        if ext in (".jpg", ".jpeg", ".png", ".webp"):
+            return local_path
+
+        if os.path.exists(master_gif):
+            return master_gif
+        return local_path
 
     def _publish_post_now(self, post: dict, chat_id: str) -> bool:
-        """Publish a post immediately via Publora (schedules 60s out in UTC ISO-8601 and verifies live status)."""
+        """Publish a post immediately via Publora (schedules 60s out in UTC ISO-8601 and verifies live status).
+        Includes strict concurrency lock and database idempotency guards to prevent duplicate LinkedIn posts.
+        """
         post_id = post["id"]
-        db.update_post_status(post_id, "approved")
 
-        if publora_client.is_configured:
-            # Guarantee that LinkedIn always receives the pure GIF image, never an MP4 video
-            media_to_publish = self._resolve_gif_media_for_publishing(post)
-            logger.info(f"Selected media for LinkedIn publishing: {media_to_publish}")
+        # 1. Concurrency guard: prevent multiple parallel executions for the exact same post
+        if post_id in self._publishing_in_progress:
+            logger.warning(f"Publishing already in progress for post #{post_id}. Ignoring duplicate trigger.")
+            telegram_bot.send_message(f"⏳ Post #{post_id} is already being published to LinkedIn. Please wait...", chat_id=chat_id)
+            return True
 
-            res = publora_client.publish_or_schedule_post(
-                post["draft_text"],
-                scheduled_time=None,
-                image_path=media_to_publish
+        # 2. Database idempotency guard: prevent duplicate live dispatches if already queued
+        fresh_post = db.get_post(post_id) or post
+        if fresh_post.get("status") in ("approved", "published") and fresh_post.get("post_urn"):
+            publora_id = fresh_post.get("post_urn")
+            logger.warning(f"Post #{post_id} already has active Publora ID '{publora_id}'. Preventing duplicate LinkedIn post.")
+            telegram_bot.send_message(
+                f"ℹ️ <b>Post #{post_id} is already queued/published!</b>\n\n"
+                f"🆔 <b>Publora ID:</b> <code>{publora_id}</code>\n"
+                f"To protect your LinkedIn profile and Publora queue, duplicate submission was prevented.\n"
+                f"🔗 <a href='https://www.linkedin.com/in/madankk04122004/recent-activity/all/'>Open LinkedIn Activity</a>",
+                chat_id=chat_id
             )
-            if res.get("success"):
-                publora_id = res.get("post_id", "")
-                sched_utc = res.get("scheduled_time_utc", "")
-                media_note = f"\n🖼 <b>Attached Media:</b> Included" if res.get("media_url") else ""
-                db.update_post_status(post_id, "approved", scheduled_time=sched_utc, post_urn=str(publora_id))
+            return True
+
+        self._publishing_in_progress.add(post_id)
+        try:
+            db.update_post_status(post_id, "approved")
+
+            if publora_client.is_configured:
+                media_to_publish = self._resolve_media_for_publishing(fresh_post)
+                logger.info(f"Selected media for LinkedIn publishing: {media_to_publish}")
+
+                res = publora_client.publish_or_schedule_post(
+                    fresh_post["draft_text"],
+                    scheduled_time=None,
+                    image_path=media_to_publish
+                )
+                if res.get("success"):
+                    publora_id = res.get("post_id", "")
+                    sched_utc = res.get("scheduled_time_utc", "")
+                    media_note = f"\n🖼 <b>Attached Media:</b> Included" if res.get("media_url") else ""
+                    db.update_post_status(post_id, "approved", scheduled_time=sched_utc, post_urn=str(publora_id))
+                    msg = (
+                        f"🚀 <b>Post #{post_id} Queued for Immediate Live Publishing!</b>\n\n"
+                        f"🆔 <b>Publora ID:</b> <code>{publora_id}</code>\n"
+                        f"⏱ <b>Dispatch Time:</b> <code>{sched_utc}</code> (~60 seconds){media_note}\n\n"
+                        f"<i>Publora is dispatching your post to LinkedIn now. I will send you a confirmation alert in ~60 seconds once LinkedIn marks it LIVE!</i>\n"
+                        f"🔗 <a href='https://www.linkedin.com/in/madankk04122004/recent-activity/all/'>Open LinkedIn Activity</a>"
+                    )
+                    telegram_bot.send_message(msg, chat_id=chat_id)
+                    if publora_id:
+                        self._verify_live_publication(post_id, str(publora_id), chat_id)
+                    return True
+                else:
+                    msg = f"⚠️ <b>Publora Publishing Error:</b> {res.get('error')}"
+                    telegram_bot.send_message(msg, chat_id=chat_id)
+                    return False
+            else:
                 msg = (
-                    f"🚀 <b>Post #{post_id} Queued for Immediate Live Publishing!</b>\n\n"
-                    f"🆔 <b>Publora ID:</b> <code>{publora_id}</code>\n"
-                    f"⏱ <b>Dispatch Time:</b> <code>{sched_utc}</code> (~60 seconds){media_note}\n\n"
-                    f"<i>Publora is dispatching your post to LinkedIn now. I will send you a confirmation alert in ~60 seconds once LinkedIn marks it LIVE!</i>\n"
-                    f"🔗 <a href='https://www.linkedin.com/in/madankk04122004/recent-activity/all/'>Open LinkedIn Activity</a>"
+                    f"✅ <b>Post #{post_id} Approved!</b>\n\n"
+                    f"<i>Copy and paste directly to LinkedIn:</i>\n\n"
+                    f"<pre>{fresh_post['draft_text']}</pre>"
                 )
                 telegram_bot.send_message(msg, chat_id=chat_id)
-                if publora_id:
-                    self._verify_live_publication(post_id, str(publora_id), chat_id)
                 return True
-            else:
-                msg = f"⚠️ <b>Publora Publishing Error:</b> {res.get('error')}"
-                telegram_bot.send_message(msg, chat_id=chat_id)
-                return False
-        else:
-            msg = (
-                f"✅ <b>Post #{post_id} Approved!</b>\n\n"
-                f"<i>Copy and paste directly to LinkedIn:</i>\n\n"
-                f"<pre>{post['draft_text']}</pre>"
-            )
-            telegram_bot.send_message(msg, chat_id=chat_id)
-            return True
+        finally:
+            self._publishing_in_progress.discard(post_id)
 
     def handle_callback_action(self, callback_data: str, chat_id: str, message_id: int, message_obj: Optional[dict] = None):
         """Handle button clicks from Telegram."""
@@ -579,15 +617,53 @@ class AgentOrchestrator:
 
         elif action in ("confirm_post", "approve_now"):
             ok = self._publish_post_now(post, chat_id)
-            if ok:
-                telegram_bot.edit_message_reply_markup(chat_id, message_id)
+        if action == "noop":
+            return
+
+        elif action == "upload_image":
+            self.pending_image_upload_post_id = post_id
+            try:
+                Path("data").mkdir(parents=True, exist_ok=True)
+                Path("data/pending_upload.txt").write_text(str(post_id))
+            except Exception:
+                pass
+            msg = (
+                f"📸 <b>Awaiting Your Custom Image for Post #{post_id}!</b>\n\n"
+                f"Please send or drop your photo/graphic (JPG, PNG, or GIF) right here in the chat.\n"
+                f"I will attach it to your post content and ask for your final confirmation before posting!"
+            )
+            telegram_bot.send_message(msg, chat_id=chat_id)
+            telegram_bot.edit_message_reply_markup(chat_id, message_id)
+            return
+
+        elif action in ("confirm_post", "approve_now"):
+            # 1. Immediately disable buttons in UI to prevent double/triple clicks
+            telegram_bot.edit_message_reply_markup(
+                chat_id, message_id,
+                reply_markup={"inline_keyboard": [[{"text": "⏳ Publishing to LinkedIn in progress...", "callback_data": "noop"}]]}
+            )
+            self._publish_post_now(post, chat_id)
             return
 
         elif action == "schedule_slot":
+            # 1. Immediately disable buttons in UI to prevent double/triple clicks
+            telegram_bot.edit_message_reply_markup(
+                chat_id, message_id,
+                reply_markup={"inline_keyboard": [[{"text": "⏳ Scheduling on Publora in progress...", "callback_data": "noop"}]]}
+            )
+
+            fresh_post = db.get_post(post_id) or post
+            if fresh_post.get("status") == "scheduled" and fresh_post.get("post_urn"):
+                telegram_bot.send_message(
+                    f"ℹ️ <b>Post #{post_id} is already scheduled on Publora!</b> (ID: <code>{fresh_post.get('post_urn')}</code>)",
+                    chat_id=chat_id
+                )
+                return
+
             if publora_client.is_configured:
-                media_to_publish = self._resolve_gif_media_for_publishing(post)
+                media_to_publish = self._resolve_media_for_publishing(fresh_post)
                 res = publora_client.publish_or_schedule_post(
-                    post["draft_text"],
+                    fresh_post["draft_text"],
                     scheduled_time="08:30",
                     image_path=media_to_publish
                 )
@@ -606,7 +682,7 @@ class AgentOrchestrator:
                 db.update_post_status(post_id, "scheduled", scheduled_time="08:30")
                 msg = f"📅 <b>Post #{post_id} Scheduled for 08:30 AM!</b>"
             telegram_bot.send_message(msg, chat_id=chat_id)
-            telegram_bot.edit_message_reply_markup(chat_id, message_id)
+            return
 
         elif action == "regen_post":
             telegram_bot.send_message(f"🔄 Regenerating angle for Post #{post_id}...", chat_id=chat_id)
@@ -638,6 +714,16 @@ class AgentOrchestrator:
         if not target_post and self.pending_image_upload_post_id:
             target_post = db.get_post(self.pending_image_upload_post_id)
 
+        # 2b. Check persistent file if server restarted
+        if not target_post:
+            pending_file = Path("data/pending_upload.txt")
+            if pending_file.exists():
+                try:
+                    p_id = int(pending_file.read_text().strip())
+                    target_post = db.get_post(p_id)
+                except Exception:
+                    pass
+
         # 3. Latest pending draft
         if not target_post:
             target_post = db.get_latest_pending_post() or db.get_latest_post()
@@ -646,105 +732,152 @@ class AgentOrchestrator:
             telegram_bot.send_message(
                 "📸 I received your media, but I could not find the post draft it belongs to "
                 "(the server may have restarted).\n\n"
-                "👉 Long-press the post draft card, tap <b>Reply</b>, and send the GIF again as the reply. "
+                "👉 Long-press the post draft card, tap <b>Reply</b>, and send the photo again as the reply. "
                 "Or type <b>draft post</b> to create a new draft.",
                 chat_id=chat_id
             )
             return
-
-        # Resolve the real file extension (Telegram delivers GIFs as MP4 'animation')
-        mime = (mime_type or "").lower()
-        name_ext = os.path.splitext(file_name or "")[1].lower()
-        if mime == "image/gif" or name_ext == ".gif":
-            ext = ".gif"
-        elif mime.startswith("video/") or media_kind in ("animation", "video") or name_ext == ".mp4":
-            ext = ".mp4"
-        elif mime == "image/png" or name_ext == ".png":
-            ext = ".png"
-        else:
-            ext = ".jpg"
 
         post_id = target_post["id"]
         telegram_bot.send_message(
             f"📥 Got your media! Attaching it to <b>Post #{post_id}</b> and preparing the final combined post...",
             chat_id=chat_id
         )
+
+        mime = (mime_type or "").lower()
+        name_ext = os.path.splitext(file_name or "")[1].lower()
+        ext = name_ext or (".png" if mime == "image/png" else (".gif" if mime == "image/gif" else ".jpg"))
+
         Path("data/user_uploads").mkdir(parents=True, exist_ok=True)
         dest_path = f"data/user_uploads/post_{post_id}_{int(time.time())}{ext}"
         downloaded = telegram_bot.download_file(file_id, dest_path)
-        if downloaded:
-            # 1. Inspect actual binary magic bytes
-            is_pure_gif = False
-            is_mp4 = False
+        if not downloaded:
+            telegram_bot.send_message("⚠️ Could not download the media. Please try sending it again.", chat_id=chat_id)
+            return
+
+        # Inspect real binary magic bytes
+        hdr = b""
+        try:
+            with open(downloaded, "rb") as f_check:
+                hdr = f_check.read(16)
+        except Exception:
+            pass
+
+        is_jpeg = hdr.startswith(b"\xff\xd8\xff")
+        is_png = hdr.startswith(b"\x89PNG")
+        is_webp = hdr.startswith(b"RIFF") and b"WEBP" in hdr
+        is_pure_gif = hdr.startswith(b"GIF87a") or hdr.startswith(b"GIF89a")
+        is_mp4 = (b"ftyp" in hdr) or hdr.startswith(b"\x00\x00\x00") or media_kind in ("animation", "video")
+
+        master_gif = f"data/generated_gifs/post_{post_id}_arch.gif"
+
+        # CASE A: User uploaded a Custom Photo (JPG / PNG / WebP)
+        if is_jpeg or is_png or is_webp or media_kind == "photo" or (ext in (".jpg", ".jpeg", ".png", ".webp") and not is_pure_gif and not is_mp4):
+            real_ext = ".png" if is_png else (".webp" if is_webp else ".jpg")
+            real_mime = "image/png" if is_png else ("image/webp" if is_webp else "image/jpeg")
+            final_media_path = str(Path(downloaded).with_suffix(real_ext))
+            if downloaded != final_media_path:
+                try:
+                    os.rename(downloaded, final_media_path)
+                except Exception:
+                    final_media_path = downloaded
+
+            logger.info(f"User uploaded valid custom photo for Post #{post_id}: {final_media_path} ({real_mime})")
+
+            # 1. Save photo blob to DB
             try:
-                with open(downloaded, "rb") as f_check:
-                    hdr = f_check.read(16)
-                if hdr.startswith(b"GIF87a") or hdr.startswith(b"GIF89a"):
-                    is_pure_gif = True
-                elif b"ftyp" in hdr or hdr.startswith(b"\x00\x00\x00") or ext == ".mp4" or media_kind in ("animation", "video"):
-                    is_mp4 = True
+                with open(final_media_path, "rb") as f:
+                    media_bytes = f.read()
+                db.save_post_media_blob(post_id, media_bytes, os.path.basename(final_media_path), real_mime)
+            except Exception as e:
+                logger.warning(f"Could not save user photo blob to DB: {e}")
+
+            # 2. Upload to public CDN
+            public_url = publora_client.upload_local_media(final_media_path, post_id=post_id)
+            stored_image_ref = public_url or final_media_path
+            db.update_post_image(post_id, stored_image_ref)
+
+            # 3. Clean up pending state
+            self.pending_image_upload_post_id = None
+            try:
+                Path("data/pending_upload.txt").unlink(missing_ok=True)
             except Exception:
                 pass
 
-            gif_target_path = downloaded
-            master_gif = f"data/generated_gifs/post_{post_id}_arch.gif"
-
-            if is_mp4 or (not is_pure_gif and ext == ".gif"):
-                from lib.gif_engine import find_ffmpeg
-                ffmpeg_exe = find_ffmpeg()
-                converted_gif = str(Path(downloaded).with_name(f"post_{post_id}_{int(time.time())}_pure.gif"))
-                if ffmpeg_exe:
-                    try:
-                        logger.info(f"Converting Telegram MP4/video {downloaded} to high-fidelity GIF {converted_gif}...")
-                        cmd_conv = [
-                            ffmpeg_exe, "-y",
-                            "-i", downloaded,
-                            "-vf", "fps=10,split[s0][s1];[s0]palettegen=max_colors=256:stats_mode=diff[p];[s1][p]paletteuse=dither=bayer:bayer_scale=3",
-                            converted_gif
-                        ]
-                        subprocess.run(cmd_conv, capture_output=True, check=True)
-                        gif_target_path = converted_gif
-                        logger.info(f"Successfully converted MP4 to pure GIF: {gif_target_path}")
-                    except Exception as e_conv:
-                        logger.warning(f"Notice: MP4 to GIF conversion failed, keeping original ({e_conv})")
-                        if os.path.exists(master_gif):
-                            gif_target_path = master_gif
-
-            # If user sent back an unedited/downscaled version of the generated post GIF (Telegram downscales animations to 320px)
-            # but we have the master 2800x1600 GIF on disk, retain the master 2800x1600 GIF for crisp quality!
-            if os.path.exists(master_gif) and os.path.exists(gif_target_path):
-                try:
-                    if os.path.getsize(gif_target_path) < 150_000 and os.path.getsize(master_gif) > 300_000:
-                        logger.info(f"Detected low-res Telegram delivery ({os.path.getsize(gif_target_path)} bytes). Retaining Master 2800x1600 GIF ({os.path.getsize(master_gif)} bytes).")
-                        gif_target_path = master_gif
-                except Exception:
-                    pass
-
-            # 2. Permanently store the pure GIF binary into MySQL/SQLite DB
-            try:
-                with open(gif_target_path, "rb") as f:
-                    media_bytes = f.read()
-                db.save_post_media_blob(post_id, media_bytes, os.path.basename(gif_target_path), "image/gif")
-            except Exception as e:
-                logger.warning(f"Could not save user upload blob to DB: {e}")
-
-            # 3. Upload pure GIF to public HTTPS host (Catbox CDN or Render DB fallback)
-            public_url = publora_client.upload_local_media(gif_target_path, post_id=post_id)
-            stored_image_ref = public_url or gif_target_path
-            db.update_post_image(post_id, stored_image_ref)
-            self.pending_image_upload_post_id = None
+            # 4. Send final confirmation card showing the actual photo preview!
             telegram_bot.send_final_confirmation_card(
                 post_id=post_id,
                 topic=target_post["topic"],
                 draft_text=target_post["draft_text"],
-                image_url=gif_target_path,
+                image_url=final_media_path,
                 chat_id=chat_id,
                 public_media_url=public_url,
                 telegram_file_id=file_id,
-                media_kind="document"
+                media_kind="photo"
             )
-        else:
-            telegram_bot.send_message("⚠️ Could not download the media. Please try sending it again.", chat_id=chat_id)
+            return
+
+        # CASE B: Animation / GIF / Video
+        gif_target_path = downloaded
+        if is_mp4 or (not is_pure_gif and ext == ".gif"):
+            from lib.gif_engine import find_ffmpeg
+            ffmpeg_exe = find_ffmpeg()
+            converted_gif = str(Path(downloaded).with_name(f"post_{post_id}_{int(time.time())}_pure.gif"))
+            if ffmpeg_exe:
+                try:
+                    logger.info(f"Converting Telegram MP4/video {downloaded} to high-fidelity GIF {converted_gif}...")
+                    cmd_conv = [
+                        ffmpeg_exe, "-y",
+                        "-i", downloaded,
+                        "-vf", "fps=10,split[s0][s1];[s0]palettegen=max_colors=256:stats_mode=diff[p];[s1][p]paletteuse=dither=bayer:bayer_scale=3",
+                        converted_gif
+                    ]
+                    subprocess.run(cmd_conv, capture_output=True, check=True)
+                    gif_target_path = converted_gif
+                    logger.info(f"Successfully converted MP4 to pure GIF: {gif_target_path}")
+                except Exception as e_conv:
+                    logger.warning(f"Notice: MP4 to GIF conversion failed: {e_conv}")
+                    if os.path.exists(master_gif):
+                        gif_target_path = master_gif
+
+        # If user sent back an unedited/downscaled version of the generated post GIF (Telegram downscales animations to 320px)
+        if is_pure_gif and os.path.exists(master_gif) and os.path.exists(gif_target_path):
+            try:
+                if os.path.getsize(gif_target_path) < 150_000 and os.path.getsize(master_gif) > 300_000:
+                    logger.info(f"Detected low-res Telegram delivery ({os.path.getsize(gif_target_path)} bytes). Retaining Master 2800x1600 GIF ({os.path.getsize(master_gif)} bytes).")
+                    gif_target_path = master_gif
+            except Exception:
+                pass
+
+        # Save pure GIF binary into MySQL/SQLite DB
+        try:
+            with open(gif_target_path, "rb") as f:
+                media_bytes = f.read()
+            db.save_post_media_blob(post_id, media_bytes, os.path.basename(gif_target_path), "image/gif")
+        except Exception as e:
+            logger.warning(f"Could not save user upload blob to DB: {e}")
+
+        # Upload pure GIF to public CDN
+        public_url = publora_client.upload_local_media(gif_target_path, post_id=post_id)
+        stored_image_ref = public_url or gif_target_path
+        db.update_post_image(post_id, stored_image_ref)
+
+        self.pending_image_upload_post_id = None
+        try:
+            Path("data/pending_upload.txt").unlink(missing_ok=True)
+        except Exception:
+            pass
+
+        telegram_bot.send_final_confirmation_card(
+            post_id=post_id,
+            topic=target_post["topic"],
+            draft_text=target_post["draft_text"],
+            image_url=gif_target_path,
+            chat_id=chat_id,
+            public_media_url=public_url,
+            telegram_file_id=file_id,
+            media_kind="document"
+        )
 
     def handle_user_document(self, file_id: str, file_name: str, chat_id: str):
         """Download and ingest technical whitepapers, text files, or architecture docs into Knowledge Vault."""
