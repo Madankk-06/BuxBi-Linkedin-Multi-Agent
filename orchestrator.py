@@ -896,14 +896,18 @@ class AgentOrchestrator:
             return
 
         result = knowledge_vault.ingest_document_file(saved_path, file_name)
-        if result.get("success"):
-            tech_lines = "\n".join([f"• <b>{t}</b>" for t in result.get("added_technologies", [])])
+        if result.get("success") and result.get("added_count", 0) > 0:
+            tech_names = result.get("added_technologies", [])
+            tech_lines = "\n".join([f"• <b>{t}</b>" for t in tech_names[:8]])
+            if len(tech_names) > 8:
+                tech_lines += f"\n<i>...and {len(tech_names) - 8} more topics queued!</i>"
+            first_topic = tech_names[0] if tech_names else "Learned Topics"
             reply = (
                 f"🧠 <b>Document Successfully Ingested into Knowledge Vault!</b>\n\n"
                 f"📄 <b>File:</b> {file_name}\n"
                 f"🔬 <b>Extracted Technologies ({result.get('added_count')}):</b>\n{tech_lines}\n\n"
                 f"💡 <b>Architectural Takeaways:</b>\n{result.get('takeaways')}\n\n"
-                f"<i>These concepts are now priority targets for upcoming daily posts and animated GIFs!</i>"
+                f"<i>Next post target: <b>{first_topic}</b>. These concepts are now locked into persistent memory for upcoming daily posts and animated GIFs!</i>"
             )
             inline_keyboard = {
                 "inline_keyboard": [
@@ -915,7 +919,8 @@ class AgentOrchestrator:
             }
             telegram_bot.send_message(reply, reply_markup=inline_keyboard, chat_id=chat_id)
         else:
-            telegram_bot.send_message(f"⚠️ Ingestion error: {result.get('error')}", chat_id=chat_id)
+            err = result.get("error") or "No readable technical content could be extracted from this document."
+            telegram_bot.send_message(f"⚠️ Ingestion error: {err}\n\nPlease provide a valid .docx, .pdf, or .txt file, or paste your topics directly in chat!", chat_id=chat_id)
 
     def handle_conversational_text(self, text: str, chat_id: str, message_obj: Optional[dict] = None):
 
@@ -945,6 +950,26 @@ class AgentOrchestrator:
             self.run_morning_content_pipeline()
             return
 
+        if clean_text in [
+            "all", "learn all", "add all", "save all", "learn them", "save these",
+            "proceed with 1st option", "proceed with all", "proceed", "1st option", "first option"
+        ]:
+            priority = knowledge_vault.get_priority_topic()
+            if priority and priority.get("status") == "new":
+                topic_name = priority.get("name")
+                telegram_bot.send_message(
+                    f"🚀 <b>Proceeding with priority topic:</b> {topic_name}\n"
+                    "Drafting post and rendering animated architectural GIF...",
+                    chat_id=chat_id
+                )
+            else:
+                telegram_bot.send_message(
+                    "🚀 Drafting next Gen AI thought leadership post...",
+                    chat_id=chat_id
+                )
+            self.run_morning_content_pipeline()
+            return
+
         if clean_text in ["/topics", "topics", "/vault", "vault", "knowledge vault"]:
             telegram_bot.send_message(knowledge_vault.get_vault_summary(), chat_id=chat_id)
             return
@@ -958,27 +983,42 @@ class AgentOrchestrator:
             if not rule_text:
                 telegram_bot.send_message(
                     "🧠 <b>How to teach Buxbi:</b>\n\n"
-                    "• <b>Teach New Tech:</b> <code>/learn Moonshine STT, vLLM chunked prefill, BitNet b1.58</code>\n"
-                    "• <b>Teach a Writing Rule:</b> <code>/learn Always mention latency as a benchmark target.</code>\n"
-                    "• <b>Send Documents:</b> Send any PDF or text file directly into this chat.\n\n"
-                    "I will save technical insights into the Knowledge Vault and writing rules into persistent memory!",
+                    "• <b>Teach New Tech:</b> <code>/learn AI Guardrails, Synthetic Data, MCP vs Function Calling</code>\n"
+                    "• <b>Paste Topic Lists:</b> Paste multiple topics directly as text into this chat.\n"
+                    "• <b>Send Documents:</b> Send any Word (.docx), PDF, or text file directly.\n"
+                    "• <b>Teach a Writing Rule:</b> <code>/learn Never use buzzwords like 'game-changer'.</code>\n\n"
+                    "I will save technical topics into the Knowledge Vault for upcoming posts and writing rules into persistent memory!",
                     chat_id=chat_id
                 )
                 return
 
             # Check if this is a negative/editorial rule or new technical concepts
-            is_rule = any(w in rule_text.lower() for w in ["don't", "dont", "never", "avoid", "stop", "rule", "should not", "always use", "always avoid"])
-            if not is_rule and ("," in rule_text or len(rule_text) > 40 or any(kw in rule_text.lower() for kw in ["architecture", "model", "paper", "framework", "vllm", "rag", "llm", "transformer", "latency"])):
+            is_rule = any(w in rule_text.lower() for w in ["don't", "dont", "never", "avoid", "stop", "rule", "should not", "always use", "always avoid", "do not"])
+            if is_rule:
+                # Save as feedback writing rule
+                saved_rule = feedback_memory.add_rule(rule_text)
+                reply = (
+                    "🧠 <b>Learned and Stored in Memory!</b>\n\n"
+                    f"Rule: {saved_rule}\n\n"
+                    "I will follow this rule for all upcoming post drafts and never repeat that mistake."
+                )
+                telegram_bot.send_message(reply, chat_id=chat_id)
+                return
+            else:
                 # Ingest as technical topic into Knowledge Vault
-                telegram_bot.send_message("🔍 Analyzing technical concepts and ingesting into Knowledge Vault...", chat_id=chat_id)
-                res = knowledge_vault.ingest_raw_text(rule_text, source_name="Telegram Note")
-                if res.get("success"):
-                    tech_lines = "\n".join([f"• <b>{t}</b>" for t in res.get("added_technologies", [])])
+                telegram_bot.send_message("🔍 Analyzing technical topic(s) and ingesting into Knowledge Vault...", chat_id=chat_id)
+                res = knowledge_vault.ingest_raw_text(rule_text, source_name="Telegram /learn")
+                if res.get("success") and res.get("added_count", 0) > 0:
+                    tech_names = res.get("added_technologies", [])
+                    tech_lines = "\n".join([f"• <b>{t}</b>" for t in tech_names[:8]])
+                    if len(tech_names) > 8:
+                        tech_lines += f"\n<i>...and {len(tech_names) - 8} more topics queued!</i>"
+                    first_topic = tech_names[0] if tech_names else "Learned Topics"
                     reply = (
                         f"🧠 <b>Learned and Stored in Knowledge Vault!</b>\n\n"
-                        f"🔬 <b>Identified Technologies:</b>\n{tech_lines}\n\n"
+                        f"🔬 <b>Identified Technologies ({res.get('added_count')}):</b>\n{tech_lines}\n\n"
                         f"💡 <b>Analysis:</b>\n{res.get('takeaways')}\n\n"
-                        f"<i>I will prioritize these topics for our upcoming posts and animated GIFs!</i>"
+                        f"<i>Next post target: <b>{first_topic}</b>. These concepts are queued for your upcoming LinkedIn posts and animated GIFs!</i>"
                     )
                     inline_keyboard = {
                         "inline_keyboard": [
@@ -992,16 +1032,40 @@ class AgentOrchestrator:
                 else:
                     telegram_bot.send_message("⚠️ Could not process technical note.", chat_id=chat_id)
                 return
-            else:
-                # Save as feedback writing rule
-                saved_rule = feedback_memory.add_rule(rule_text)
-                reply = (
-                    "🧠 <b>Learned and Stored in Memory!</b>\n\n"
-                    f"Rule: {saved_rule}\n\n"
-                    "I will follow this rule for all upcoming post drafts and never repeat that mistake."
+
+        # Check if user pasted a list of topics (2+ discrete lines of technical concepts)
+        if not clean_text.startswith("/"):
+            from core.knowledge_vault import extract_topic_items_from_text
+            pasted_topics = extract_topic_items_from_text(text)
+            if len(pasted_topics) >= 2:
+                telegram_bot.send_message(
+                    f"🧠 <b>Detected {len(pasted_topics)} technical topics!</b>\n"
+                    "Analyzing each topic architecture and ingesting into Knowledge Vault...",
+                    chat_id=chat_id
                 )
-                telegram_bot.send_message(reply, chat_id=chat_id)
-                return
+                res = knowledge_vault.ingest_raw_text(text, source_name="Pasted Topics")
+                if res.get("success") and res.get("added_count", 0) > 0:
+                    tech_names = res.get("added_technologies", [])
+                    tech_lines = "\n".join([f"• <b>{t}</b>" for t in tech_names[:8]])
+                    if len(tech_names) > 8:
+                        tech_lines += f"\n<i>...and {len(tech_names) - 8} more topics queued!</i>"
+                    first_topic = tech_names[0] if tech_names else "Learned Topics"
+                    reply = (
+                        f"🧠 <b>Successfully Learned {res.get('added_count')} Topics!</b>\n\n"
+                        f"🔬 <b>Queued for Upcoming Posts:</b>\n{tech_lines}\n\n"
+                        f"💡 <b>Architectural Summary:</b>\n{res.get('takeaways')}\n\n"
+                        f"<i>Next scheduled post will be on: <b>{first_topic}</b>!</i>"
+                    )
+                    inline_keyboard = {
+                        "inline_keyboard": [
+                            [
+                                {"text": "🚀 Draft Post on This Now", "callback_data": "draft_new:0"},
+                                {"text": "📚 View Knowledge Vault", "callback_data": "view_vault:0"}
+                            ]
+                        ]
+                    }
+                    telegram_bot.send_message(reply, reply_markup=inline_keyboard, chat_id=chat_id)
+                    return
 
         if any(trigger in clean_text for trigger in [
             "/connections", "connections", "/network", "find leaders", "connection", "network", "scout",

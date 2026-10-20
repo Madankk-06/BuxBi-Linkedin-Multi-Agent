@@ -11,31 +11,34 @@ class LLMClient:
     def __init__(self):
         self.provider = config.LLM_PROVIDER
 
-    def generate(self, prompt: str, system_prompt: Optional[str] = None, temperature: float = 0.7) -> str:
+    def generate(self, prompt: str, system_prompt: Optional[str] = None, temperature: float = 0.7, max_tokens: int = 1500) -> str:
         """Universal text generator that routes to the configured LLM provider."""
         if self.provider == "groq":
-            return self._call_groq(prompt, system_prompt, temperature)
+            return self._call_groq(prompt, system_prompt, temperature, max_tokens=max_tokens)
         elif self.provider == "gemini":
-            return self._call_gemini(prompt, system_prompt, temperature)
+            return self._call_gemini(prompt, system_prompt, temperature, max_tokens=max_tokens)
         elif self.provider == "openai":
-            return self._call_openai(prompt, system_prompt, temperature)
+            return self._call_openai(prompt, system_prompt, temperature, max_tokens=max_tokens)
         elif self.provider == "anthropic":
-            return self._call_anthropic(prompt, system_prompt, temperature)
+            return self._call_anthropic(prompt, system_prompt, temperature, max_tokens=max_tokens)
         else:
             raise ValueError(f"Unsupported LLM provider: {self.provider}")
 
-    def _call_groq(self, prompt: str, system_prompt: Optional[str], temperature: float) -> str:
+    def _call_groq(self, prompt: str, system_prompt: Optional[str], temperature: float, max_tokens: int = 1500) -> str:
         """Call Groq API using Groq's high-speed inference engine."""
         api_key = config.GROQ_API_KEY
         if not api_key:
             raise ValueError("GROQ_API_KEY is not set in .env")
 
         model = config.GROQ_MODEL or "qwen/qwen3.8-27b"
-        # Try primary model then fallback models
+        # Try primary model then valid fallback models on Groq
         models_to_try = [model]
-        for fb in ["llama-3.3-70b-versatile", "llama-3.1-8b-instant"]:
+        for fb in ["openai/gpt-oss-120b", "openai/gpt-oss-20b"]:
             if fb != model:
                 models_to_try.append(fb)
+
+        # Cap output tokens to prevent exceeding Groq's 1000 OTPM limit on free tier
+        effective_max_tokens = min(max_tokens, 800)
 
         last_err = None
         for m in models_to_try:
@@ -51,13 +54,15 @@ class LLMClient:
                     messages=messages,
                     model=m,
                     temperature=temperature,
-                    max_tokens=700,
+                    max_tokens=effective_max_tokens,
                 )
                 return chat_completion.choices[0].message.content.strip()
             except Exception as e:
                 last_err = e
-                logger.warning(f"Groq model {m} failed ({e}), trying fallback...")
-                time.sleep(1)
+                err_str = str(e).lower()
+                sleep_time = 3.0 if "rate_limit" in err_str or "429" in err_str else 1.0
+                logger.warning(f"Groq model {m} failed ({e}), sleeping {sleep_time}s and trying fallback...")
+                time.sleep(sleep_time)
 
         raise RuntimeError(f"All Groq models failed. Last error: {last_err}")
 
