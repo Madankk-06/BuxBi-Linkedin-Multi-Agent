@@ -214,7 +214,7 @@ def poll_telegram_updates():
                         message_id = msg_obj["message_id"]
                         
                         telegram_bot.answer_callback_query(cb_id, "Processing your choice...")
-                        orchestrator.handle_callback_action(data_payload, chat_id, message_id, message_obj=msg_obj)
+                        orchestrator.handle_callback_action(data_payload, chat_id, message_id, message_obj=msg_obj, callback_query_id=cb_id)
 
                     # 2. Handle photos sent by user
                     elif "message" in update and "photo" in update["message"]:

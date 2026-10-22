@@ -25,6 +25,9 @@ class AgentOrchestrator:
     def __init__(self):
         self.pending_image_upload_post_id: Optional[int] = None
         self._publishing_in_progress: set[int] = set()
+        self._already_notified_queued: set[int] = set()
+        self._verifying_posts: set[int] = set()
+        self._verified_posts: set[int] = set()
 
     def run_morning_content_pipeline(self) -> int:
         """Autonomous pipeline: Select diverse Gen AI domain -> Draft practitioner post -> Humanize -> Render Architectural GIF -> Telegram."""
@@ -205,35 +208,53 @@ class AgentOrchestrator:
         return None
 
     def _verify_live_publication(self, post_id: int, post_group_id: str, chat_id: str):
-        """Background verifier: polls Publora after ~65s to confirm the post transitioned from 'scheduled' to 'published' on LinkedIn."""
+        """Background verifier: polls Publora after ~65s to confirm the post transitioned from 'scheduled' to 'published' on LinkedIn.
+        Strictly guarantees EXACTLY 1 verification message is sent per post.
+        """
+        if post_id in self._verifying_posts or post_id in self._verified_posts:
+            logger.info(f"Verification already active or finished for post #{post_id}. Skipping duplicate poller.")
+            return
+
+        self._verifying_posts.add(post_id)
+
         def _poll():
-            time.sleep(65)
-            for attempt in range(5):
-                status_data = publora_client.get_post_status(post_group_id)
-                group = status_data.get("postGroup") or status_data
-                status = group.get("status")
-                logger.info(f"Publora verification poll #{attempt+1} for {post_group_id}: status={status}")
+            try:
+                time.sleep(65)
+                for attempt in range(5):
+                    if post_id in self._verified_posts:
+                        return
 
-                if status in ("published", "partially_published"):
-                    telegram_bot.send_message(
-                        f"🎉 <b>VERIFIED LIVE ON LINKEDIN!</b>\n\n"
-                        f"✅ Post #{post_id} (<code>{post_group_id}</code>) is now officially published on your LinkedIn feed.\n"
-                        f"🔗 <a href='https://www.linkedin.com/in/madankk04122004/recent-activity/all/'>View Live Activity on LinkedIn</a>",
-                        chat_id=chat_id
-                    )
-                    return
+                    status_data = publora_client.get_post_status(post_group_id)
+                    group = status_data.get("postGroup") or status_data
+                    status = group.get("status")
+                    logger.info(f"Publora verification poll #{attempt+1} for {post_group_id}: status={status}")
 
-                if status in ("failed", "error"):
-                    err_detail = group.get("error") or str(group)
-                    telegram_bot.send_message(
-                        f"⚠️ <b>Publora Dispatch Alert for Post #{post_id}:</b>\n"
-                        f"Status reported: <code>{status}</code>\n"
-                        f"Details: {err_detail}",
-                        chat_id=chat_id
-                    )
-                    return
+                    if status in ("published", "partially_published"):
+                        if post_id not in self._verified_posts:
+                            self._verified_posts.add(post_id)
+                            telegram_bot.send_message(
+                                f"🎉 <b>VERIFIED LIVE ON LINKEDIN!</b>\n\n"
+                                f"✅ Post #{post_id} (<code>{post_group_id}</code>) is now officially published on your LinkedIn feed.\n"
+                                f"🔗 <a href='https://www.linkedin.com/in/madankk04122004/recent-activity/all/'>View Live Activity on LinkedIn</a>",
+                                chat_id=chat_id,
+                                disable_web_page_preview=True
+                            )
+                        return
 
-                time.sleep(20)
+                    if status in ("failed", "error"):
+                        err_detail = group.get("error") or str(group)
+                        telegram_bot.send_message(
+                            f"⚠️ <b>Publora Dispatch Alert for Post #{post_id}:</b>\n"
+                            f"Status reported: <code>{status}</code>\n"
+                            f"Details: {err_detail}",
+                            chat_id=chat_id,
+                            disable_web_page_preview=True
+                        )
+                        return
+
+                    time.sleep(20)
+            finally:
+                self._verifying_posts.discard(post_id)
 
         t = threading.Thread(target=_poll, daemon=True)
         t.start()
@@ -310,30 +331,39 @@ class AgentOrchestrator:
             return master_gif
         return local_path
 
-    def _publish_post_now(self, post: dict, chat_id: str) -> bool:
+    def _publish_post_now(self, post: dict, chat_id: str, callback_query_id: Optional[str] = None) -> bool:
         """Publish a post immediately via Publora (schedules 60s out in UTC ISO-8601 and verifies live status).
         Includes strict concurrency lock and database idempotency guards to prevent duplicate LinkedIn posts.
+        Guarantees EXACTLY 1 confirmation message is sent.
         """
         post_id = post["id"]
 
         # 1. Concurrency guard: prevent multiple parallel executions for the exact same post
         if post_id in self._publishing_in_progress:
             logger.warning(f"Publishing already in progress for post #{post_id}. Ignoring duplicate trigger.")
-            telegram_bot.send_message(f"⏳ Post #{post_id} is already being published to LinkedIn. Please wait...", chat_id=chat_id)
+            if callback_query_id:
+                telegram_bot.answer_callback_query(callback_query_id, f"⏳ Post #{post_id} is currently being published...", show_alert=False)
             return True
 
-        # 2. Database idempotency guard: prevent duplicate live dispatches if already queued
+        # 2. Database idempotency guard: prevent duplicate live dispatches if already queued/published
         fresh_post = db.get_post(post_id) or post
         if fresh_post.get("status") in ("approved", "published") and fresh_post.get("post_urn"):
             publora_id = fresh_post.get("post_urn")
             logger.warning(f"Post #{post_id} already has active Publora ID '{publora_id}'. Preventing duplicate LinkedIn post.")
-            telegram_bot.send_message(
-                f"ℹ️ <b>Post #{post_id} is already queued/published!</b>\n\n"
-                f"🆔 <b>Publora ID:</b> <code>{publora_id}</code>\n"
-                f"To protect your LinkedIn profile and Publora queue, duplicate submission was prevented.\n"
-                f"🔗 <a href='https://www.linkedin.com/in/madankk04122004/recent-activity/all/'>Open LinkedIn Activity</a>",
-                chat_id=chat_id
-            )
+            if callback_query_id:
+                telegram_bot.answer_callback_query(callback_query_id, f"Post #{post_id} is already queued/published!", show_alert=False)
+
+            # Strictly notify at most ONCE per post lifecycle, with link preview disabled
+            if post_id not in self._already_notified_queued:
+                self._already_notified_queued.add(post_id)
+                telegram_bot.send_message(
+                    f"ℹ️ <b>Post #{post_id} is already queued/published!</b>\n\n"
+                    f"🆔 <b>Publora ID:</b> <code>{publora_id}</code>\n"
+                    f"To protect your LinkedIn profile and Publora queue, duplicate submission was prevented.\n"
+                    f"🔗 <a href='https://www.linkedin.com/in/madankk04122004/recent-activity/all/'>Open LinkedIn Activity</a>",
+                    chat_id=chat_id,
+                    disable_web_page_preview=True
+                )
             return True
 
         self._publishing_in_progress.add(post_id)
@@ -354,6 +384,8 @@ class AgentOrchestrator:
                     sched_utc = res.get("scheduled_time_utc", "")
                     media_note = f"\n🖼 <b>Attached Media:</b> Included" if res.get("media_url") else ""
                     db.update_post_status(post_id, "approved", scheduled_time=sched_utc, post_urn=str(publora_id))
+                    self._already_notified_queued.add(post_id)
+
                     msg = (
                         f"🚀 <b>Post #{post_id} Queued for Immediate Live Publishing!</b>\n\n"
                         f"🆔 <b>Publora ID:</b> <code>{publora_id}</code>\n"
@@ -361,7 +393,7 @@ class AgentOrchestrator:
                         f"<i>Publora is dispatching your post to LinkedIn now. I will send you a confirmation alert in ~60 seconds once LinkedIn marks it LIVE!</i>\n"
                         f"🔗 <a href='https://www.linkedin.com/in/madankk04122004/recent-activity/all/'>Open LinkedIn Activity</a>"
                     )
-                    telegram_bot.send_message(msg, chat_id=chat_id)
+                    telegram_bot.send_message(msg, chat_id=chat_id, disable_web_page_preview=True)
                     if publora_id:
                         self._verify_live_publication(post_id, str(publora_id), chat_id)
                     return True
@@ -380,10 +412,14 @@ class AgentOrchestrator:
         finally:
             self._publishing_in_progress.discard(post_id)
 
-    def handle_callback_action(self, callback_data: str, chat_id: str, message_id: int, message_obj: Optional[dict] = None):
+    def handle_callback_action(self, callback_data: str, chat_id: str, message_id: int, message_obj: Optional[dict] = None, callback_query_id: Optional[str] = None):
         """Handle button clicks from Telegram."""
         parts = callback_data.split(":")
         action = parts[0]
+        if action == "noop":
+            if callback_query_id:
+                telegram_bot.answer_callback_query(callback_query_id, "Publishing in progress, please wait...")
+            return
         if len(parts) >= 4:
             sub_param = parts[1]
             sub_param2 = parts[2]
@@ -606,22 +642,6 @@ class AgentOrchestrator:
         # --- OTHER BUTTON ACTIONS ---
         elif action == "upload_image":
             self.pending_image_upload_post_id = post_id
-            msg = (
-                f"📸 <b>Awaiting Your Custom Image for Post #{post_id}!</b>\n\n"
-                f"Please send or drop your photo/graphic (JPG, PNG, or GIF) right here in the chat.\n"
-                f"I will attach it to your post content and ask for your final confirmation before posting!"
-            )
-            telegram_bot.send_message(msg, chat_id=chat_id)
-            telegram_bot.edit_message_reply_markup(chat_id, message_id)
-            return
-
-        elif action in ("confirm_post", "approve_now"):
-            ok = self._publish_post_now(post, chat_id)
-        if action == "noop":
-            return
-
-        elif action == "upload_image":
-            self.pending_image_upload_post_id = post_id
             try:
                 Path("data").mkdir(parents=True, exist_ok=True)
                 Path("data/pending_upload.txt").write_text(str(post_id))
@@ -642,7 +662,9 @@ class AgentOrchestrator:
                 chat_id, message_id,
                 reply_markup={"inline_keyboard": [[{"text": "⏳ Publishing to LinkedIn in progress...", "callback_data": "noop"}]]}
             )
-            self._publish_post_now(post, chat_id)
+            if callback_query_id:
+                telegram_bot.answer_callback_query(callback_query_id, "Publishing to LinkedIn...")
+            self._publish_post_now(post, chat_id, callback_query_id=callback_query_id)
             return
 
         elif action == "schedule_slot":
@@ -654,10 +676,15 @@ class AgentOrchestrator:
 
             fresh_post = db.get_post(post_id) or post
             if fresh_post.get("status") == "scheduled" and fresh_post.get("post_urn"):
-                telegram_bot.send_message(
-                    f"ℹ️ <b>Post #{post_id} is already scheduled on Publora!</b> (ID: <code>{fresh_post.get('post_urn')}</code>)",
-                    chat_id=chat_id
-                )
+                if callback_query_id:
+                    telegram_bot.answer_callback_query(callback_query_id, f"Post #{post_id} is already scheduled!", show_alert=False)
+                if post_id not in self._already_notified_queued:
+                    self._already_notified_queued.add(post_id)
+                    telegram_bot.send_message(
+                        f"ℹ️ <b>Post #{post_id} is already scheduled on Publora!</b> (ID: <code>{fresh_post.get('post_urn')}</code>)",
+                        chat_id=chat_id,
+                        disable_web_page_preview=True
+                    )
                 return
 
             if publora_client.is_configured:
@@ -671,11 +698,14 @@ class AgentOrchestrator:
                     publora_id = res.get("post_id", "")
                     sched_utc = res.get("scheduled_time_utc", "08:30 IST")
                     db.update_post_status(post_id, "scheduled", scheduled_time=sched_utc, post_urn=str(publora_id))
+                    self._already_notified_queued.add(post_id)
                     msg = (
                         f"📅 <b>Post #{post_id} Scheduled on Publora for 08:30 AM IST!</b>\n"
                         f"🆔 <b>Publora ID:</b> <code>{publora_id}</code>\n"
                         f"🕒 <b>UTC Slot:</b> <code>{sched_utc}</code>"
                     )
+                    telegram_bot.send_message(msg, chat_id=chat_id, disable_web_page_preview=True)
+                    return
                 else:
                     msg = f"⚠️ Could not schedule on Publora: {res.get('error')}"
             else:

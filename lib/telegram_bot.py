@@ -50,7 +50,7 @@ class TelegramBot:
             logger.error(f"Failed to set bot commands: {e}")
             return {}
 
-    def send_message(self, text: str, reply_markup: Optional[dict] = None, chat_id: Optional[str] = None, parse_mode: str = "HTML") -> dict:
+    def send_message(self, text: str, reply_markup: Optional[dict] = None, chat_id: Optional[str] = None, parse_mode: str = "HTML", disable_web_page_preview: bool = True) -> dict:
         """Send a message to Telegram with automatic asterisk/arrow sanitization and HTML fallback."""
         if not self.token:
             logger.warning("Telegram Bot Token is not configured. Skipping send.")
@@ -69,7 +69,7 @@ class TelegramBot:
         payload = {
             "chat_id": chat_id,
             "text": clean_text,
-            "disable_web_page_preview": False
+            "disable_web_page_preview": disable_web_page_preview
         }
         if parse_mode:
             payload["parse_mode"] = parse_mode
