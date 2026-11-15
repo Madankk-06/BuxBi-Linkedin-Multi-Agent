@@ -167,12 +167,20 @@ def start_health_server():
 def run_daily_job():
     """Triggered every day at the scheduled time."""
     logger.info("Executing scheduled morning agent job...")
+    import traceback
     try:
         orchestrator.run_morning_content_pipeline()
+    except Exception as e:
+        err_trace = traceback.format_exc()
+        logger.error(f"Error in morning content pipeline: {err_trace}")
+        telegram_bot.send_message(f"⚠️ Error running morning content pipeline: {type(e).__name__}: {e}\n\n<code>{err_trace[-300:]}</code>")
+
+    try:
         orchestrator.run_networking_pipeline(count=config.MAX_DAILY_CONNECTIONS)
     except Exception as e:
-        logger.error(f"Error during scheduled job: {e}")
-        telegram_bot.send_message(f"⚠️ Error running autonomous scheduled job: {e}")
+        err_trace = traceback.format_exc()
+        logger.error(f"Error in networking pipeline: {err_trace}")
+        telegram_bot.send_message(f"⚠️ Error running networking pipeline: {type(e).__name__}: {e}\n\n<code>{err_trace[-300:]}</code>")
 
 def run_weekly_intimation_job():
     """Triggered weekly (every Sunday evening) to request new tech insights, documents, or focus areas."""
